@@ -1,0 +1,1621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Satellite Control Visualization - v7 HUD Graphs</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cesium/1.107.0/Cesium.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cesium/1.107.0/Widgets/widgets.css">
+    <style>
+        /* ==================== Global Font Settings ==================== */
+        html, body {
+            width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden;
+            background-color: #000;
+            font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        #cesiumContainer {
+            width: 100%; height: 100%;
+        }
+        
+        /* ==================== Telemetry Panel (Collapsible) ==================== */
+        .status-panel {
+            position: absolute; top: 10px; right: 10px;
+            background-color: rgba(20, 20, 25, 0.85); color: #e2e8f0;
+            border-radius: 8px; 
+            font-size: 12px; max-width: 340px; z-index: 1000;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(8px);
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+        
+        .telemetry-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 15px;
+            background: linear-gradient(90deg, rgba(30, 30, 35, 0.9) 0%, rgba(40, 40, 45, 0.9) 100%);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            cursor: pointer;
+            user-select: none;
+        }
+        
+        .telemetry-header:hover {
+            background: rgba(50, 50, 55, 1);
+        }
+        
+        .telemetry-header-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .telemetry-header h3 {
+            margin: 0;
+            font-size: 13px;
+            font-weight: 700;
+            color: #f8fafc;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+        
+        .telemetry-toggle-icon {
+            font-size: 10px;
+            color: #94a3b8;
+            transition: transform 0.3s ease;
+        }
+        
+        .telemetry-toggle-icon.expanded {
+            transform: rotate(180deg);
+        }
+        
+        .telemetry-summary {
+            padding: 10px 15px;
+            background: rgba(20, 20, 25, 0.4);
+        }
+        
+        .telemetry-summary-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 6px;
+            font-size: 11px;
+        }
+        
+        .telemetry-summary-row:last-child {
+            margin-bottom: 0;
+        }
+        
+        .telemetry-summary-label {
+            color: #94a3b8;
+            font-weight: 500;
+            letter-spacing: 0.5px;
+        }
+        
+        .telemetry-summary-value {
+            font-weight: 600;
+            font-family: 'Consolas', 'Monaco', monospace;
+            color: #f1f5f9;
+            letter-spacing: 0px;
+        }
+        
+        .telemetry-details {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease;
+            background: rgba(20, 20, 25, 0.6);
+        }
+        
+        .telemetry-details.expanded {
+            max-height: 900px;
+            overflow-y: auto;
+        }
+        
+        .telemetry-details-content {
+            padding: 15px;
+            padding-bottom: 5px;
+        }
+        
+        .connection-indicator {
+            display: inline-block; width: 8px; height: 8px;
+            border-radius: 50%; background-color: #ef4444;
+            box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
+        }
+        .connection-indicator.connected { 
+            background-color: #10b981; 
+            box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+        }
+
+        /* ==================== Mode Panel (Toggle Style) ==================== */
+        .mode-panel {
+            position: absolute; top: 10px; left: 10px;
+            background-color: rgba(20, 20, 25, 0.85); color: white;
+            border-radius: 8px; 
+            font-size: 12px; z-index: 1000; min-width: 220px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(4px);
+            overflow: hidden;
+            transition: all 0.3s ease;
+            padding: 0;
+        }
+
+        .mode-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 15px;
+            cursor: pointer;
+            background: linear-gradient(90deg, rgba(30, 30, 35, 0.9) 0%, rgba(40, 40, 45, 0.9) 100%);
+            border-bottom: 1px solid transparent;
+            transition: border-color 0.3s ease, background 0.3s;
+        }
+
+        .mode-header:hover {
+            background: rgba(50, 50, 55, 1);
+        }
+
+        .mode-header.expanded {
+            border-bottom-color: rgba(255, 255, 255, 0.1);
+        }
+
+        .mode-current-text {
+            margin: 0;
+            font-size: 13px; 
+            font-weight: 700;
+            color: #f8fafc;
+            text-transform: uppercase; 
+            letter-spacing: 1px;
+        }
+
+        .mode-toggle-icon {
+            font-size: 10px;
+            color: #94a3b8;
+            transition: transform 0.3s ease;
+        }
+
+        .mode-toggle-icon.expanded {
+            transform: rotate(180deg);
+        }
+
+        .mode-list-container {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            background: rgba(20, 20, 25, 0.6);
+        }
+
+        .mode-list-container.expanded {
+            max-height: 350px;
+        }
+
+        .mode-buttons {
+            padding: 10px 12px;
+            display: flex; 
+            flex-direction: column; 
+            gap: 6px;
+        }
+
+        .mode-buttons button {
+            padding: 10px 12px; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px;
+            background-color: rgba(40, 40, 45, 0.5); color: #cbd5e1; cursor: pointer;
+            text-align: left; transition: all 0.2s; font-size: 11px;
+            font-family: inherit; font-weight: 500; letter-spacing: 0.3px;
+            display: flex; justify-content: space-between;
+        }
+        .mode-buttons button:hover { 
+            background-color: rgba(255, 255, 255, 0.1); 
+            border-color: rgba(255, 255, 255, 0.3);
+            color: white;
+        }
+        .mode-buttons button.active { 
+            background: linear-gradient(90deg, rgba(71, 85, 105, 0.8) 0%, rgba(51, 65, 85, 0.8) 100%);
+            border-color: #94a3b8; 
+            color: white;
+            box-shadow: 0 0 10px rgba(148, 163, 184, 0.3);
+        }
+        .mode-buttons button .key-hint {
+            color: rgba(255,255,255,0.4); font-size: 10px; font-family: monospace;
+        }
+        .mode-buttons button.active .key-hint {
+            color: rgba(255,255,255,0.7);
+        }
+        
+        /* Controls Info */
+        .controls-info {
+            position: absolute; bottom: 10px; left: 10px;
+            background-color: rgba(20, 20, 25, 0.85); color: #cbd5e1;
+            padding: 12px; border-radius: 8px;
+            font-size: 11px; max-width: 280px; z-index: 1000;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        .controls-info h3 { 
+            margin: 0 0 8px 0; font-size: 12px; color: #f1f5f9; 
+            font-weight: 700; text-transform: uppercase; letter-spacing: 1px;
+        }
+        .controls-info .key { 
+            display: inline-block; background: rgba(255,255,255,0.15); padding: 2px 6px; 
+            border-radius: 3px; margin-right: 5px; 
+            font-family: 'Consolas', 'Monaco', monospace; 
+            color: white; font-size: 10px;
+        }
+        
+        /* Legend */
+        .legend {
+            position: absolute; bottom: 10px; right: 10px;
+            background-color: rgba(20, 20, 25, 0.85); color: #cbd5e1;
+            padding: 12px; border-radius: 8px;
+            font-size: 11px; max-width: 200px; z-index: 1000;
+            border: 1px solid rgba(255,255,255,0.1);
+            display: none;
+        }
+        .legend.visible { display: block; }
+        .legend h3 {
+            margin: 0 0 8px 0; font-size: 12px; color: #f1f5f9;
+            font-weight: 700; text-transform: uppercase; letter-spacing: 1px;
+        }
+        .legend-item { display: flex; align-items: center; margin-bottom: 5px; }
+
+        /* ==================== GSD View Overlay ==================== */
+        .gsd-overlay {
+            position: absolute; bottom: 60px; left: 50%; transform: translateX(-50%);
+            z-index: 1001; display: none; flex-direction: column; align-items: center; gap: 8px;
+            pointer-events: none;
+        }
+        .gsd-overlay.visible { display: flex; }
+
+        .gsd-info-bar {
+            background: rgba(10, 10, 15, 0.85); border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 6px; padding: 8px 16px;
+            font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; color: #e2e8f0;
+            display: flex; gap: 20px; align-items: center;
+            backdrop-filter: blur(6px);
+        }
+        .gsd-info-bar .gsd-label { color: #94a3b8; font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; }
+        .gsd-info-bar .gsd-value { color: #f8fafc; font-weight: 700; font-size: 13px; }
+
+        .gsd-scalebar {
+            display: flex; flex-direction: column; align-items: center; gap: 2px;
+        }
+        .gsd-scalebar-line {
+            height: 2px; background: #f8fafc; position: relative;
+            box-shadow: 0 0 4px rgba(255,255,255,0.5);
+        }
+        .gsd-scalebar-line::before, .gsd-scalebar-line::after {
+            content: ''; position: absolute; top: -4px; width: 2px; height: 10px; background: #f8fafc;
+        }
+        .gsd-scalebar-line::before { left: 0; }
+        .gsd-scalebar-line::after { right: 0; }
+        .gsd-scalebar-text {
+            font-family: 'Consolas', 'Monaco', monospace; font-size: 11px;
+            color: #f8fafc; font-weight: 600; text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+        }
+
+        .gsd-crosshair {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            z-index: 1001; display: none; pointer-events: none;
+        }
+        .gsd-crosshair.visible { display: block; }
+        .gsd-crosshair svg { width: 60px; height: 60px; }
+        .legend-color { display: inline-block; width: 16px; height: 3px; margin-right: 8px; border-radius: 2px; }
+        
+        /* Telemetry text section */
+        .telemetry-section { margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.1); }
+        .telemetry-section .section-title { 
+            color: #e2e8f0; font-weight: 700; margin-bottom: 4px; 
+            font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        
+        .mode-indicator { 
+            padding: 6px 10px; border-radius: 4px; margin: 8px 0; text-align: center; 
+            font-weight: 600; font-size: 11px; letter-spacing: 0.5px;
+        }
+        .mode-indicator.mode-4 { background: rgba(255, 255, 255, 0.1); color: #f8fafc; border: 1px solid rgba(255, 255, 255, 0.2); }
+        .mode-indicator.mode-0 { background: rgba(148, 163, 184, 0.1); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.2); }
+        .mode-indicator.mode-7 { background: rgba(232, 121, 249, 0.15); color: #e879f9; border: 1px solid rgba(232, 121, 249, 0.3); }
+
+        /* ==================== Real-time Graph Styles (HUD Design) ==================== */
+        .graph-section {
+            margin-top: 12px;
+            padding: 12px 15px; /* Side padding to match container */
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .graph-section-title {
+            font-size: 11px;
+            font-weight: 700;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        /* 각 그래프 카드를 감싸는 컨테이너 */
+        .graph-card {
+            background: rgba(15, 23, 42, 0.6); /* 더 어두운 배경 */
+            border: 1px solid rgba(51, 65, 85, 0.5);
+            border-radius: 6px;
+            padding: 8px 10px;
+            margin-bottom: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+            transition: border-color 0.2s;
+        }
+
+        .graph-card:hover {
+            border-color: rgba(148, 163, 184, 0.5);
+        }
+
+        /* 그래프 헤더: 라벨과 현재 값 표시 */
+        .graph-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
+        }
+
+        .graph-label {
+            font-size: 10px;
+            font-weight: 600;
+            color: #cbd5e1;
+            text-transform: uppercase;
+        }
+
+        /* 현재 값 표시용 스타일 */
+        .graph-value-group {
+            display: flex;
+            gap: 8px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 11px;
+        }
+
+        .val-cmd { color: #60a5fa; } /* Blue for Cmd */
+        .val-act { color: #f87171; font-weight: bold; } /* Red for Actual */
+
+        .graph-container {
+            position: relative;
+            height: 50px; /* 높이를 줄여 컴팩트하게 */
+            width: 100%;
+        }
+
+        .graph-container canvas {
+            width: 100% !important;
+            height: 100% !important;
+        }
+
+        /* 범례 스타일 개선 */
+        .graph-legend {
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            margin-top: 4px;
+            margin-bottom: 12px;
+            font-size: 9px;
+            color: #64748b;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .legend-dot {
+            width: 6px; height: 6px; border-radius: 50%;
+        }
+
+        .telemetry-details.expanded {
+            max-height: 850px;
+            overflow-y: auto;
+        }
+
+        /* ==================== Attitude Control Panel (Gray Theme) ==================== */
+        .attitude-control-panel {
+            position: absolute;
+            bottom: 15px; 
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            padding: 0;
+            background: transparent;
+            gap: 0; 
+        }
+
+        .attitude-control-panel.visible {
+            display: flex;
+        }
+
+        /* WASD Circular Pad */
+        .dpad-container {
+            width: 180px; 
+            height: 180px;
+            position: relative;
+            z-index: 10; 
+            margin-bottom: -65px; 
+            filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.5));
+        }
+
+        .dpad-svg {
+            width: 100%;
+            height: 100%;
+            overflow: visible;
+        }
+
+        /* SVG Paths (Gray Theme) */
+        .joy-btn-svg {
+            fill: rgba(71, 85, 105, 0.5); /* Slate Gray Semi-transparent */
+            stroke: rgba(255, 255, 255, 0.3); 
+            stroke-width: 1.5px;
+            transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+            cursor: pointer;
+            backdrop-filter: blur(5px);
+        }
+
+        /* Text Styling */
+        .dpad-text {
+            font-family: inherit;
+            font-weight: 800;
+            font-size: 20px;
+            fill: #f1f5f9;
+            pointer-events: none;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+            transition: all 0.15s;
+            letter-spacing: 0.5px;
+        }
+        .dpad-text.small-text {
+            font-size: 12px;
+            fill: #cbd5e1;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        /* Hover Effects */
+        .dpad-btn-group:hover .joy-btn-svg {
+            fill: rgba(100, 116, 139, 0.6);
+            stroke: #ffffff;
+            transform: scale(1.02);
+            transform-origin: center;
+        }
+        
+        .dpad-btn-group:hover .dpad-text {
+            fill: #ffffff;
+        }
+
+        /* Active State (White) */
+        .dpad-btn-group:active .joy-btn-svg, 
+        .dpad-btn-group.active .joy-btn-svg {
+            fill: #ffffff;
+            stroke: #ffffff;
+            filter: drop-shadow(0 0 12px rgba(255, 255, 255, 0.8));
+        }
+        
+        .dpad-btn-group:active .dpad-text,
+        .dpad-btn-group.active .dpad-text {
+            fill: #0f172a;
+        }
+        
+        /* Space Button Specifics */
+        .center-btn {
+            stroke-width: 2px;
+            stroke: rgba(255, 255, 255, 0.2);
+        }
+
+        /* Roll Buttons Row (Q and E) */
+        .roll-buttons-row {
+            display: flex;
+            justify-content: space-between;
+            width: 300px; 
+            z-index: 5;
+            padding: 10px 0;
+            background: radial-gradient(ellipse at center, rgba(255, 255, 255, 0.05) 0%, transparent 70%);
+        }
+
+        .roll-btn {
+            width: 70px;
+            height: 45px;
+            clip-path: polygon(10% 0, 100% 0, 100% 70%, 90% 100%, 0 100%, 0 30%);
+            border: none;
+            background: linear-gradient(135deg, rgba(51, 65, 85, 0.6), rgba(30, 41, 59, 0.7));
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2), 0 4px 10px rgba(0, 0, 0, 0.3);
+            color: #f1f5f9;
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            backdrop-filter: blur(5px);
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+            letter-spacing: 0.5px;
+        }
+        
+        #btn-e {
+            clip-path: polygon(0 0, 90% 0, 100% 30%, 100% 100%, 10% 100%, 0 70%);
+        }
+
+        .roll-btn:hover {
+            background: linear-gradient(135deg, rgba(71, 85, 105, 0.7), rgba(51, 65, 85, 0.8));
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.6), 0 0 10px rgba(255, 255, 255, 0.2);
+            transform: translateY(-2px);
+            color: white;
+        }
+
+        .roll-btn:active, .roll-btn.active {
+            background: #ffffff;
+            color: #0f172a;
+            box-shadow: 0 0 20px rgba(255, 255, 255, 0.6);
+            transform: translateY(1px);
+        }
+    </style>
+</head>
+<body>
+    <div id="cesiumContainer"></div>
+
+    <div class="mode-panel" id="modePanel">
+        <div class="mode-header" id="modeHeader" onclick="toggleModePanel()">
+            <h3 class="mode-current-text" id="currentModeText">7: Target Pointing</h3>
+            <span class="mode-toggle-icon" id="modeToggleIcon">▼</span>
+        </div>
+        <div class="mode-list-container" id="modeList">
+            <div class="mode-buttons">
+                <button id="mode0" onclick="setControlMode(0)"><span>0: No Control</span> <span class="key-hint">[0]</span></button>
+                <button id="mode1" onclick="setControlMode(1)"><span>1: Rate Damping</span> <span class="key-hint">[1]</span></button>
+                <button id="mode2" onclick="setControlMode(2)"><span>2: Inertial Pointing</span> <span class="key-hint">[2]</span></button>
+                <button id="mode3" onclick="setControlMode(3)"><span>3: Nadir Pointing</span> <span class="key-hint">[3]</span></button>
+                <button id="mode4" onclick="setControlMode(4)"><span>4: Interactive</span> <span class="key-hint">[4]</span></button>
+                <button id="mode5" onclick="setControlMode(5)"><span>5: Momentum Bias</span> <span class="key-hint">[5]</span></button>
+                <button id="mode7" onclick="setControlMode(7)"><span>7: Target Pointing</span> <span class="key-hint">[7]</span></button>
+            </div>
+        </div>
+    </div>
+
+    <div class="status-panel" id="telemetryPanel">
+        <div class="telemetry-header" id="telemetryHeader" onclick="toggleTelemetryDetails()">
+            <div class="telemetry-header-left">
+                <span class="connection-indicator" id="connectionStatus"></span>
+                <h3>TELEMETRY</h3>
+            </div>
+            <span class="telemetry-toggle-icon" id="telemetryToggleIcon">▼</span>
+        </div>
+        <div class="telemetry-summary" id="telemetrySummary">
+            <div class="telemetry-summary-row">
+                <span class="telemetry-summary-label">STATUS</span>
+                <span class="telemetry-summary-value" id="summaryStatus">DISCONNECTED</span>
+            </div>
+            <div class="telemetry-summary-row">
+                <span class="telemetry-summary-label">MODE</span>
+                <span class="telemetry-summary-value" id="summaryMode">--</span>
+            </div>
+            <div class="telemetry-summary-row">
+                <span class="telemetry-summary-label">TIME</span>
+                <span class="telemetry-summary-value" id="summaryTime">--</span>
+            </div>
+        </div>
+        <div class="telemetry-details" id="telemetryDetails">
+            <div class="telemetry-details-content" id="telemetryDetailsContent">
+                </div>
+            
+            <div class="graph-section">
+                <div class="graph-section-title">📊 Angular Rate (deg/s)</div>
+                
+                <div class="graph-card">
+                    <div class="graph-header">
+                        <span class="graph-label">Roll ω</span>
+                        <div class="graph-value-group">
+                            <span class="val-cmd" id="valRollCmd">0.00</span>
+                            <span class="val-act" id="valRollAct">0.00</span>
+                        </div>
+                    </div>
+                    <div class="graph-container">
+                        <canvas id="chartRollRate"></canvas>
+                    </div>
+                </div>
+                
+                <div class="graph-card">
+                    <div class="graph-header">
+                        <span class="graph-label">Pitch ω</span>
+                        <div class="graph-value-group">
+                            <span class="val-cmd" id="valPitchCmd">0.00</span>
+                            <span class="val-act" id="valPitchAct">0.00</span>
+                        </div>
+                    </div>
+                    <div class="graph-container">
+                        <canvas id="chartPitchRate"></canvas>
+                    </div>
+                </div>
+                
+                <div class="graph-card">
+                    <div class="graph-header">
+                        <span class="graph-label">Yaw ω</span>
+                        <div class="graph-value-group">
+                            <span class="val-cmd" id="valYawCmd">0.00</span>
+                            <span class="val-act" id="valYawAct">0.00</span>
+                        </div>
+                    </div>
+                    <div class="graph-container">
+                        <canvas id="chartYawRate"></canvas>
+                    </div>
+                </div>
+                
+                <div class="graph-legend">
+                    <div class="legend-item"><div class="legend-dot" style="background:#3b82f6"></div> CMD</div>
+                    <div class="legend-item"><div class="legend-dot" style="background:#ef4444"></div> ACT</div>
+                </div>
+            </div>
+
+            <div class="graph-section">
+                <div class="graph-section-title">📐 Attitude (Euler 321, deg)</div>
+                
+                <div class="graph-card">
+                    <div class="graph-header">
+                        <span class="graph-label">Roll φ</span>
+                        <div class="graph-value-group">
+                            <span class="val-cmd" id="valRollAttCmd">0.00</span>
+                            <span class="val-act" id="valRollAttAct">0.00</span>
+                        </div>
+                    </div>
+                    <div class="graph-container">
+                        <canvas id="chartRollAtt"></canvas>
+                    </div>
+                </div>
+                
+                <div class="graph-card">
+                    <div class="graph-header">
+                        <span class="graph-label">Pitch θ</span>
+                        <div class="graph-value-group">
+                            <span class="val-cmd" id="valPitchAttCmd">0.00</span>
+                            <span class="val-act" id="valPitchAttAct">0.00</span>
+                        </div>
+                    </div>
+                    <div class="graph-container">
+                        <canvas id="chartPitchAtt"></canvas>
+                    </div>
+                </div>
+                
+                <div class="graph-card">
+                    <div class="graph-header">
+                        <span class="graph-label">Yaw ψ</span>
+                        <div class="graph-value-group">
+                            <span class="val-cmd" id="valYawAttCmd">0.00</span>
+                            <span class="val-act" id="valYawAttAct">0.00</span>
+                        </div>
+                    </div>
+                    <div class="graph-container">
+                        <canvas id="chartYawAtt"></canvas>
+                    </div>
+                </div>
+
+                <div class="graph-legend">
+                    <div class="legend-item"><div class="legend-dot" style="background:#3b82f6"></div> CMD</div>
+                    <div class="legend-item"><div class="legend-dot" style="background:#ef4444"></div> ACT</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="controls-info">
+        <h3>Camera Mode</h3>
+        <div style="display: flex; flex-direction: column; gap: 4px;">
+            <div><span class="key">F1</span> Tracking view</div>
+            <div><span class="key">F2</span> Satellite view (Wide)</div>
+            <div><span class="key">F3</span> Satellite view (Zoom)</div>
+            <div><span class="key">F4</span> GSD View (1px=0.3m)</div>
+            <div style="margin-top: 4px; color: #94a3b8;">Current: <span id="cameraMode" style="color: #f8fafc; font-weight: bold;">Tracking</span></div>
+        </div>
+    </div>
+
+    <div class="attitude-control-panel" id="attitudeControlPanel">
+        <div class="dpad-container">
+            <svg viewBox="0 0 200 200" class="dpad-svg">
+                <g class="dpad-btn-group" data-command="increase_pitch" id="btn-w">
+                    <path d="M 128.3 71.7 L 163.6 36.4 A 90 90 0 0 0 36.4 36.4 L 71.7 71.7 A 40 40 0 0 1 128.3 71.7 Z" class="joy-btn-svg" />
+                    <text x="100" y="38" dy="1" text-anchor="middle" dominant-baseline="central" class="dpad-text">W</text>
+                </g>
+                <g class="dpad-btn-group" transform="rotate(90, 100, 100)" data-command="yaw_right" id="btn-d">
+                    <path d="M 128.3 71.7 L 163.6 36.4 A 90 90 0 0 0 36.4 36.4 L 71.7 71.7 A 40 40 0 0 1 128.3 71.7 Z" class="joy-btn-svg" />
+                    <text x="90" y="28" dy="1" transform="rotate(-90, 100, 28)" text-anchor="middle" dominant-baseline="central" class="dpad-text">D</text>
+                </g>
+                <g class="dpad-btn-group" transform="rotate(180, 100, 100)" data-command="decrease_pitch" id="btn-s">
+                    <path d="M 128.3 71.7 L 163.6 36.4 A 90 90 0 0 0 36.4 36.4 L 71.7 71.7 A 40 40 0 0 1 128.3 71.7 Z" class="joy-btn-svg" />
+                    <text x="100" y="18" dy="1" transform="rotate(-180, 100, 28)" text-anchor="middle" dominant-baseline="central" class="dpad-text">S</text>
+                </g>
+                <g class="dpad-btn-group" transform="rotate(270, 100, 100)" data-command="yaw_left" id="btn-a">
+                    <path d="M 128.3 71.7 L 163.6 36.4 A 90 90 0 0 0 36.4 36.4 L 71.7 71.7 A 40 40 0 0 1 128.3 71.7 Z" class="joy-btn-svg" />
+                    <text x="110" y="28" dy="1" transform="rotate(-270, 100, 28)" text-anchor="middle" dominant-baseline="central" class="dpad-text">A</text>
+                </g>
+                <g class="dpad-btn-group" data-command="stop_rotation" id="btn-space">
+                    <circle cx="100" cy="100" r="35" class="joy-btn-svg center-btn" />
+                    <text x="100" y="100" dy="1" text-anchor="middle" dominant-baseline="central" class="dpad-text small-text">Space</text>
+                </g>
+            </svg>
+        </div>
+        <div class="roll-buttons-row">
+            <button class="roll-btn joy-btn" id="btn-q" data-command="increase_roll">Q</button>
+            <button class="roll-btn joy-btn" id="btn-e" data-command="decrease_roll">E</button>
+        </div>
+    </div>
+
+    <div class="legend" id="legendPanel">
+        <h3>INDICATORS</h3>
+        <div class="legend-item">
+            <div class="legend-color" style="background-color: cyan; box-shadow: 0 0 5px cyan;"></div>
+            <div>Velocity</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background-color: orange; box-shadow: 0 0 5px orange;"></div>
+            <div>Nadir</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background-color: lime; box-shadow: 0 0 5px lime;"></div>
+            <div>North</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background-color: red; box-shadow: 0 0 5px red;"></div>
+            <div>South</div>
+        </div>
+    </div>
+
+    <!-- GSD View Overlay -->
+    <div class="gsd-overlay" id="gsdOverlay">
+        <div class="gsd-scalebar">
+            <div class="gsd-scalebar-line" id="gsdScalebarLine" style="width: 100px;"></div>
+            <div class="gsd-scalebar-text" id="gsdScalebarText">100 m</div>
+        </div>
+        <div class="gsd-info-bar">
+            <div><span class="gsd-label">GSD</span><br><span class="gsd-value" id="gsdValueDisplay">0.30 m/px</span></div>
+            <div><span class="gsd-label">Coverage</span><br><span class="gsd-value" id="gsdCoverageDisplay">-- x -- m</span></div>
+            <div><span class="gsd-label">Altitude</span><br><span class="gsd-value" id="gsdAltDisplay">-- km</span></div>
+            <div><span class="gsd-label">FOV</span><br><span class="gsd-value" id="gsdFovDisplay">--</span></div>
+        </div>
+    </div>
+
+    <!-- GSD View Crosshair -->
+    <div class="gsd-crosshair" id="gsdCrosshair">
+        <svg viewBox="0 0 60 60">
+            <line x1="30" y1="5" x2="30" y2="22" stroke="rgba(255,255,255,0.5)" stroke-width="1"/>
+            <line x1="30" y1="38" x2="30" y2="55" stroke="rgba(255,255,255,0.5)" stroke-width="1"/>
+            <line x1="5" y1="30" x2="22" y2="30" stroke="rgba(255,255,255,0.5)" stroke-width="1"/>
+            <line x1="38" y1="30" x2="55" y2="30" stroke="rgba(255,255,255,0.5)" stroke-width="1"/>
+            <circle cx="30" cy="30" r="12" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="1"/>
+        </svg>
+    </div>
+
+    <script>
+    // ================== Global Variables ==================
+    let viewer, satellite, orbitEntity;
+    let xAxis, yAxis, zAxis;
+    let angularVelocityVector;
+    let orbitPoints = [];
+    let currentCameraMode = 0;
+    
+    // SampledProperty
+    let positionProperty;
+    let orientationProperty;
+    let velocityProperty;
+
+    // Indicators
+    let orbitalVelocityVector;
+    let nadirVector;
+    let northVector;
+    let southVector;
+
+    // Cache
+    let _p = null;
+    let _velEnd = null;
+    let _nadirEnd = null;
+    let _northEnd = null;
+    let _southEnd = null;
+    const _vel = new Cesium.Cartesian3();
+
+    // WebSocket
+    let socket;
+    let isConnected = false;
+    let isFirstMessage = true;
+    
+    // Listener
+    let satelliteViewListener = null;
+
+    // Body Offset
+    const BODY_OFFSET = new Cesium.Cartesian3(-30.0, 30.0, 0.0);
+
+    // ================== GSD Camera Parameters ==================
+    const CAMERA_GSD = 0.3;           // meters/pixel
+    const CAMERA_ALTITUDE = 300000;   // nominal altitude [m]
+    const CAMERA_PIXEL_SIZE = 5e-6;   // 5 μm
+    const CAMERA_FOCAL_LENGTH = CAMERA_PIXEL_SIZE * CAMERA_ALTITUDE / CAMERA_GSD; // 5.0 m
+
+    // Control Mode
+    let currentControlMode = 7;
+    let backendControlMode = 7; 
+    let isModePanelExpanded = false;
+
+    // Target Pointing
+    let targetMarker, targetLosLine;
+    let targetEcef = null;
+
+    const modeNames = [
+        'No Control', 'Rate Damping', 'Inertial Pointing',
+        'Nadir Pointing', 'Interactive', 'Momentum Bias',
+        'Headless', 'Target Pointing'
+    ];
+
+    // ================== Real-time Graph Variables ==================
+    const MAX_DATA_POINTS = 100; // Limit points for smoother sparklines
+    
+    let graphData = {
+        time: [],
+        rollRateCmd: [], rollRateAct: [],
+        pitchRateCmd: [], pitchRateAct: [],
+        yawRateCmd: [], yawRateAct: [],
+        rollAttCmd: [], rollAttAct: [],
+        pitchAttCmd: [], pitchAttAct: [],
+        yawAttCmd: [], yawAttAct: []
+    };
+    
+    let charts = {
+        rollRate: null, pitchRate: null, yawRate: null,
+        rollAtt: null, pitchAtt: null, yawAtt: null
+    };
+
+    // ================== Utility Functions ==================
+    function formatNumber(value, decimals = 2) {
+        if (value === undefined || value === null || isNaN(value)) return 'N/A';
+        return Number(value).toFixed(decimals);
+    }
+
+    function radToDeg(rad) {
+        return rad * (180 / Math.PI);
+    }
+
+    function ecefToLla(x, y, z) {
+        const cartesian = new Cesium.Cartesian3(x, y, z);
+        const cartographic = Cesium.Cartographic.fromCartesian(cartesian);
+        return {
+            longitude: Cesium.Math.toDegrees(cartographic.longitude),
+            latitude: Cesium.Math.toDegrees(cartographic.latitude),
+            altitude: cartographic.height
+        };
+    }
+
+    function getBodyAxes(quat) {
+        const m = Cesium.Matrix3.fromQuaternion(quat, new Cesium.Matrix3());
+        return {
+            x: Cesium.Matrix3.getColumn(m, 0, new Cesium.Cartesian3()),
+            y: Cesium.Matrix3.getColumn(m, 1, new Cesium.Cartesian3()),
+            z: Cesium.Matrix3.getColumn(m, 2, new Cesium.Cartesian3())
+        };
+    }
+
+    function applyBodyOffset(pos, quat) {
+        if (!BODY_OFFSET || (BODY_OFFSET.x === 0 && BODY_OFFSET.y === 0 && BODY_OFFSET.z === 0)) return pos;
+        const rot = Cesium.Matrix3.fromQuaternion(quat, new Cesium.Matrix3());
+        const offsetWorld = Cesium.Matrix3.multiplyByVector(rot, BODY_OFFSET, new Cesium.Cartesian3());
+        return Cesium.Cartesian3.add(pos, offsetWorld, new Cesium.Cartesian3());
+    }
+
+    // ================== Control Mode Functions ==================
+    function toggleModePanel() {
+        isModePanelExpanded = !isModePanelExpanded;
+        const list = document.getElementById('modeList');
+        const icon = document.getElementById('modeToggleIcon');
+        const header = document.getElementById('modeHeader');
+
+        if (isModePanelExpanded) {
+            list.classList.add('expanded');
+            icon.classList.add('expanded');
+            header.classList.add('expanded');
+        } else {
+            list.classList.remove('expanded');
+            icon.classList.remove('expanded');
+            header.classList.remove('expanded');
+        }
+    }
+
+    function setControlMode(mode) {
+        console.log('Requested mode change to:', modeNames[mode]);
+        updateModeButtonsUI(mode);
+        
+        if (isModePanelExpanded) {
+            toggleModePanel();
+        }
+        
+        if (isConnected) {
+            socket.send(JSON.stringify({
+                command: 'set_mode',
+                ctrl_mode: mode
+            }));
+        }
+    }
+
+    function updateModeButtonsUI(mode) {
+        for (let i = 0; i <= 7; i++) {
+            const btn = document.getElementById('mode' + i);
+            if (btn) {
+                btn.classList.remove('active');
+                if (i === mode) {
+                    btn.classList.add('active');
+                }
+            }
+        }
+        currentControlMode = mode;
+        const headerText = document.getElementById('currentModeText');
+        if (headerText) {
+            headerText.textContent = `${mode}: ${modeNames[mode]}`;
+        }
+        updateAttitudeControlPanelVisibility();
+    }
+
+    function updateBackendModeDisplay(mode, modeName) {
+        backendControlMode = mode;
+        updateModeButtonsUI(mode);
+    }
+
+    // ================== Cesium Initialization ==================
+    function initCesium() {
+        try {
+            Cesium.Ion.defaultAccessToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI2OWU1MTE5Ni1iNjc3LTRhOGMtYjUzNy0wOTYyMjg2ZjRiNjQiLCJpZCI6Mjk0MTAxLCJpYXQiOjE3NDQ2NzgwMzN9.Es400ydfnCqdySgDnXF72GfTjQqXLDa22ZhN1peSsaQ';
+
+            viewer = new Cesium.Viewer('cesiumContainer', {
+                terrainProvider: new Cesium.EllipsoidTerrainProvider(),
+                infoBox: false, selectionIndicator: false, shadows: false,
+                shouldAnimate: true, baseLayerPicker: false, geocoder: false,
+                homeButton: false, sceneModePicker: false, navigationHelpButton: false,
+                animation: false, timeline: false, fullscreenButton: false
+            });
+            viewer.cesiumWidget.creditContainer.style.display = 'none';
+
+            positionProperty = new Cesium.SampledPositionProperty();
+            orientationProperty = new Cesium.SampledProperty(Cesium.Quaternion);
+            positionProperty.setInterpolationOptions({ interpolationDegree: 2, interpolationAlgorithm: Cesium.LagrangePolynomialApproximation });
+            orientationProperty.setInterpolationOptions({ interpolationDegree: 1 });
+            positionProperty.forwardExtrapolationType = Cesium.ExtrapolationType.EXTRAPOLATE;
+            orientationProperty.forwardExtrapolationType = Cesium.ExtrapolationType.EXTRAPOLATE;
+            velocityProperty = new Cesium.VelocityVectorProperty(positionProperty);
+
+            viewer.camera.frustum.near = 0.01;
+            const defaultPos = new Cesium.Cartesian3(0, 0, 6378137 * 1.1);
+
+            satellite = viewer.entities.add({
+                name: 'Satellite', show: false,
+                position: positionProperty, orientation: orientationProperty,
+                model: { uri: '../../data/glb/Satellite/VLEO_Satellite.glb', scale: 10.0, minimumPixelSize: 200, maximumScale: 20000 },
+                viewFrom: new Cesium.Cartesian3(0, -15000, 8000)
+            });
+
+            // Axes
+            const axisLength = 4000; const axisWidth = 4; const halfLen = axisLength * 0.5;
+            const createAxis = (color, getVector) => ({
+                polyline: {
+                    positions: new Cesium.CallbackProperty(time => {
+                        const pos = positionProperty.getValue(time);
+                        const quat = orientationProperty.getValue(time);
+                        if (!pos || !quat) return [];
+                        const base = applyBodyOffset(pos, quat);
+                        const axes = getBodyAxes(quat);
+                        const vec = getVector(axes);
+                        return [
+                            Cesium.Cartesian3.add(base, Cesium.Cartesian3.multiplyByScalar(vec, -halfLen, new Cesium.Cartesian3()), new Cesium.Cartesian3()),
+                            Cesium.Cartesian3.add(base, Cesium.Cartesian3.multiplyByScalar(vec, halfLen, new Cesium.Cartesian3()), new Cesium.Cartesian3())
+                        ];
+                    }, false),
+                    width: axisWidth, material: new Cesium.PolylineArrowMaterialProperty(color)
+                }
+            });
+            xAxis = viewer.entities.add({ ...createAxis(Cesium.Color.RED, axes => axes.x), show: false });
+            yAxis = viewer.entities.add({ ...createAxis(Cesium.Color.GREEN, axes => axes.y), show: false });
+            zAxis = viewer.entities.add({ ...createAxis(Cesium.Color.BLUE, axes => axes.z), show: false });
+
+            orbitEntity = viewer.entities.add({
+                polyline: { positions: new Cesium.CallbackProperty(() => orbitPoints, false), width: 2, material: new Cesium.PolylineGlowMaterialProperty({ glowPower: 0.1, color: Cesium.Color.YELLOW }) }
+            });
+
+            // Indicators
+            const createIndicator = (color, name, getEnd) => viewer.entities.add({
+                name: name, show: false,
+                position: new Cesium.CallbackProperty(() => getEnd(), false),
+                polyline: {
+                    positions: new Cesium.CallbackProperty(() => (_p && getEnd()) ? [_p, getEnd()] : [], false),
+                    width: 3, material: new Cesium.PolylineGlowMaterialProperty({ glowPower: 0.25, color: color.withAlpha(0.9) })
+                },
+                label: { text: name, font: '12px sans-serif', fillColor: color, pixelOffset: new Cesium.Cartesian2(12, 0), showBackground: true, backgroundColor: Cesium.Color.BLACK.withAlpha(0.6) }
+            });
+            orbitalVelocityVector = createIndicator(Cesium.Color.CYAN, 'Velocity', () => _velEnd);
+            nadirVector = createIndicator(Cesium.Color.ORANGE, 'Nadir', () => _nadirEnd);
+            northVector = createIndicator(Cesium.Color.LIME, 'North', () => _northEnd);
+            southVector = createIndicator(Cesium.Color.RED, 'South', () => _southEnd);
+
+
+            // LOS line: satellite -> target
+
+
+        } catch (error) { console.error("initCesium error:", error); }
+    }
+
+    function recordOrbitPath() {
+        const currentPosition = positionProperty.getValue(viewer.clock.currentTime);
+        if (currentPosition) {
+            orbitPoints.push(Cesium.Cartesian3.clone(currentPosition));
+            if (orbitPoints.length > 300) orbitPoints.shift();
+        }
+    }
+
+    // ================== WebSocket ==================
+    function connectWebSocket() {
+        try {
+            socket = new WebSocket("ws://localhost:8765");
+            socket.onopen = function() {
+                console.log("WebSocket connected"); isConnected = true;
+                document.getElementById('connectionStatus').classList.add('connected');
+                const status = document.getElementById('summaryStatus');
+                status.textContent = 'CONNECTED'; status.style.color = '#10b981';
+            };
+            socket.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.simDate && data.position_ecef && data.quaternion) {
+                        const isoString = data.simDate.replace(" ", "T") + "Z";
+                        const time = Cesium.JulianDate.fromIso8601(new Date(isoString).toISOString());
+                        positionProperty.addSample(time, new Cesium.Cartesian3(...data.position_ecef));
+                        orientationProperty.addSample(time, new Cesium.Quaternion(...data.quaternion));
+
+                        if (isFirstMessage) {
+                            viewer.clock.startTime = time.clone();
+                            viewer.clock.stopTime = Cesium.JulianDate.addDays(time, 1, new Cesium.JulianDate());
+                            viewer.clock.currentTime = time.clone();
+                            viewer.clock.clockStep = Cesium.ClockStep.SYSTEM_CLOCK_MULTIPLIER;
+                            viewer.clock.multiplier = 1.0;
+                            viewer.clock.shouldAnimate = true;
+                            satellite.show = true; xAxis.show = true; yAxis.show = true; zAxis.show = true;
+                            isFirstMessage = false;
+                            switchCameraMode(0);
+                            setInterval(recordOrbitPath, 100);
+                        }
+                    }
+                    updateTelemetryDisplay(data);
+                } catch (e) { console.error("Error processing telemetry:", e); }
+            };
+            socket.onclose = function() {
+                console.log("WebSocket disconnected"); isConnected = false;
+                document.getElementById('connectionStatus').classList.remove('connected');
+                const status = document.getElementById('summaryStatus');
+                status.textContent = 'DISCONNECTED'; status.style.color = '#ef4444';
+                setTimeout(connectWebSocket, 3000);
+            };
+        } catch (error) { console.error("connectWebSocket error:", error); }
+    }
+
+    // ================== Direction Indicators & View ==================
+    function updateDirectionIndicators(position, quat) {
+        try {
+            const epsilon = 1e-3, L = 8000;
+            const t = viewer.clock.currentTime;
+            
+            // 카메라 시점이 아닌 순수 위성 궤도 위치를 기준점(position)으로 사용
+            const basePos = applyBodyOffset(position, quat);
+            _p = basePos;
+
+            let v = velocityProperty.getValue(t, _vel);
+            if (Cesium.defined(v) && Cesium.Cartesian3.magnitude(v) > epsilon) {
+                _velEnd = Cesium.Cartesian3.add(basePos, Cesium.Cartesian3.multiplyByScalar(Cesium.Cartesian3.normalize(v, new Cesium.Cartesian3()), L, new Cesium.Cartesian3()), new Cesium.Cartesian3());
+            } else _velEnd = null;
+
+            // 흔들림 없는 Nadir 계산을 위해 위성 궤도 위치(position) 사용
+            if (Cesium.Cartesian3.magnitude(position) > epsilon) {
+                const nadirDir = Cesium.Cartesian3.normalize(Cesium.Cartesian3.negate(position, new Cesium.Cartesian3()), new Cesium.Cartesian3());
+                _nadirEnd = Cesium.Cartesian3.add(basePos, Cesium.Cartesian3.multiplyByScalar(nadirDir, L, new Cesium.Cartesian3()), new Cesium.Cartesian3());
+            } else _nadirEnd = null;
+
+            // 흔들림 없는 North/South 계산을 위해 위성 궤도 위치(position) 사용
+            if (_nadirEnd) {
+                const enu = Cesium.Transforms.eastNorthUpToFixedFrame(position, Cesium.Ellipsoid.WGS84);
+                const rot = Cesium.Matrix4.getMatrix3(enu, new Cesium.Matrix3());
+                const north = Cesium.Matrix3.getColumn(rot, 1, new Cesium.Cartesian3());
+                const northN = Cesium.Cartesian3.normalize(north, new Cesium.Cartesian3());
+                _northEnd = Cesium.Cartesian3.add(basePos, Cesium.Cartesian3.multiplyByScalar(northN, L, new Cesium.Cartesian3()), new Cesium.Cartesian3());
+                _southEnd = Cesium.Cartesian3.add(basePos, Cesium.Cartesian3.multiplyByScalar(Cesium.Cartesian3.negate(northN, new Cesium.Cartesian3()), L, new Cesium.Cartesian3()), new Cesium.Cartesian3());
+            } else { _northEnd = _southEnd = null; }
+        } catch (e) { }
+    }
+
+    function setIndicatorsVisible(flag) {
+        [orbitalVelocityVector, nadirVector, northVector, southVector].forEach(e => {
+            if (e) { e.show = flag; if (e.polyline) e.polyline.show = flag; if (e.label) e.label.show = flag; }
+        });
+    }
+
+    function setupSatelliteView() {
+        if (satelliteViewListener) { satelliteViewListener(); satelliteViewListener = null; }
+        viewer.trackedEntity = undefined;
+        viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+
+        const listener = function() {
+            const t = viewer.clock.currentTime;
+            const pos = positionProperty.getValue(t);
+            const quat = orientationProperty.getValue(t);
+            if (!pos || !quat) return;
+
+            const basePos = applyBodyOffset(pos, quat);
+            const axes = getBodyAxes(quat);
+            const forward = Cesium.Cartesian3.normalize(axes.z, new Cesium.Cartesian3());
+            const up = Cesium.Cartesian3.normalize(axes.y, new Cesium.Cartesian3());
+            const camOffset = (currentCameraMode === 1) ? 0.1 : 0.5;
+            const camPos = Cesium.Cartesian3.add(basePos, Cesium.Cartesian3.multiplyByScalar(forward, -camOffset, new Cesium.Cartesian3()), new Cesium.Cartesian3());
+
+            // Rotate up vector by -90 degrees around Z axis (forward) to match baseline
+            const rotationAngle = Cesium.Math.toRadians(-90);
+            const rotationQuat = Cesium.Quaternion.fromAxisAngle(forward, rotationAngle);
+            const rotationMatrix = Cesium.Matrix3.fromQuaternion(rotationQuat, new Cesium.Matrix3());
+            const rotatedUp = Cesium.Matrix3.multiplyByVector(rotationMatrix, up, new Cesium.Cartesian3());
+
+            viewer.camera.position = camPos;
+            viewer.camera.direction = forward;
+            viewer.camera.up = rotatedUp;
+            viewer.camera.frustum.fov = Cesium.Math.toRadians(currentCameraMode === 1 ? 0.7 : 15.0);
+            updateDirectionIndicatorsForSatelliteView(camPos, forward, rotatedUp, quat);
+        };
+        satelliteViewListener = viewer.scene.preUpdate.addEventListener(listener);
+    }
+
+    function updateDirectionIndicatorsForSatelliteView(camPos, camForward, camUp, quat) {
+        try {
+            const t = viewer.clock.currentTime;
+            const satPos = positionProperty.getValue(t); // 카메라 뷰 대신 부드러운 위성 위치 사용
+            if (!satPos) return;
+            
+            const indicatorDistance = (currentCameraMode === 1) ? 50000 : 20000;
+            const indicatorLength = (currentCameraMode === 1) ? 15000 : 8000;
+            
+            const indicatorStart = Cesium.Cartesian3.add(
+                camPos,
+                Cesium.Cartesian3.multiplyByScalar(camForward, indicatorDistance, new Cesium.Cartesian3()),
+                new Cesium.Cartesian3()
+            );
+            _p = indicatorStart;
+            
+            const epsilon = 1e-3;
+
+            // 1) Velocity (가장 부드러운 속도 벡터 기준)
+            let v = velocityProperty.getValue(t, _vel);
+            if (Cesium.defined(v) && Cesium.Cartesian3.magnitude(v) > epsilon) {
+                const dir = Cesium.Cartesian3.normalize(v, new Cesium.Cartesian3());
+                _velEnd = Cesium.Cartesian3.add(indicatorStart,
+                    Cesium.Cartesian3.multiplyByScalar(dir, indicatorLength, new Cesium.Cartesian3()),
+                    new Cesium.Cartesian3());
+            } else {
+                _velEnd = null;
+            }
+
+            // 2) Nadir (흔들림 제거: camPos 대신 satPos 기반 계산)
+            if (Cesium.Cartesian3.magnitude(satPos) > epsilon) {
+                const nadirDir = Cesium.Cartesian3.normalize(
+                    Cesium.Cartesian3.negate(satPos, new Cesium.Cartesian3()),
+                    new Cesium.Cartesian3()
+                );
+                _nadirEnd = Cesium.Cartesian3.add(indicatorStart,
+                    Cesium.Cartesian3.multiplyByScalar(nadirDir, indicatorLength, new Cesium.Cartesian3()),
+                    new Cesium.Cartesian3());
+            } else {
+                _nadirEnd = null;
+            }
+
+            // 3) North/South (흔들림 제거: satPos 기반 ENU 계산)
+            if (_nadirEnd) {
+                const enu = Cesium.Transforms.eastNorthUpToFixedFrame(satPos, Cesium.Ellipsoid.WGS84);
+                const rot = Cesium.Matrix4.getMatrix3(enu, new Cesium.Matrix3());
+                const north = Cesium.Matrix3.getColumn(rot, 1, new Cesium.Cartesian3());
+                const northN = Cesium.Cartesian3.normalize(north, new Cesium.Cartesian3());
+                
+                _northEnd = Cesium.Cartesian3.add(indicatorStart,
+                    Cesium.Cartesian3.multiplyByScalar(northN, indicatorLength, new Cesium.Cartesian3()),
+                    new Cesium.Cartesian3());
+                _southEnd = Cesium.Cartesian3.add(indicatorStart,
+                    Cesium.Cartesian3.multiplyByScalar(
+                        Cesium.Cartesian3.negate(northN, new Cesium.Cartesian3()),
+                        indicatorLength, new Cesium.Cartesian3()),
+                    new Cesium.Cartesian3());
+            } else {
+                _northEnd = _southEnd = null;
+            }
+        } catch (e) {
+            console.error("updateDirectionIndicatorsForSatelliteView error:", e);
+        }
+    }
+
+    function switchCameraMode(mode) {
+        currentCameraMode = mode;
+        const modeText = document.getElementById('cameraMode');
+        const legendPanel = document.getElementById('legendPanel');
+        const gsdOverlay = document.getElementById('gsdOverlay');
+        const gsdCrosshair = document.getElementById('gsdCrosshair');
+        if (satelliteViewListener) { satelliteViewListener(); satelliteViewListener = null; }
+
+        // Hide GSD overlay by default
+        if (gsdOverlay) gsdOverlay.classList.remove('visible');
+        if (gsdCrosshair) gsdCrosshair.classList.remove('visible');
+
+        if (mode === 0) {
+            // Tracking view — restore satellite model
+            viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+            viewer.camera.frustum.fov = Cesium.Math.toRadians(60.0);
+            satellite.show = true;
+            orbitEntity.show = true;
+            viewer.trackedEntity = satellite;
+            modeText.textContent = "Tracking (Zoom 가능)";
+            setIndicatorsVisible(false);
+            if (legendPanel) legendPanel.classList.remove('visible');
+            xAxis.show = true; yAxis.show = true; zAxis.show = true;
+        } else if (mode === 3) {
+            // GSD View — hide satellite model to prevent blocking the narrow FOV
+            viewer.trackedEntity = undefined;
+            satellite.show = false;
+            orbitEntity.show = false;
+            modeText.textContent = "GSD View (1px = " + CAMERA_GSD + "m)";
+            setIndicatorsVisible(false);
+            if (legendPanel) legendPanel.classList.remove('visible');
+            if (gsdOverlay) gsdOverlay.classList.add('visible');
+            if (gsdCrosshair) gsdCrosshair.classList.add('visible');
+            xAxis.show = false; yAxis.show = false; zAxis.show = false;
+            setupGSDView();
+        } else {
+            // Satellite views — restore satellite model
+            viewer.trackedEntity = undefined;
+            satellite.show = true;
+            orbitEntity.show = true;
+            modeText.textContent = (mode === 1) ? "Satellite View (0.7° FOV)" : "Satellite View (15° FOV)";
+            setIndicatorsVisible(true);
+            if (legendPanel) legendPanel.classList.add('visible');
+            xAxis.show = false; yAxis.show = false; zAxis.show = false;
+            setupSatelliteView();
+        }
+        const t = viewer.clock.currentTime;
+        const pos = positionProperty.getValue(t);
+        const quat = orientationProperty.getValue(t);
+        if (pos && quat) updateDirectionIndicators(pos, quat);
+    }
+
+    // ================== GSD View ==================
+    function setupGSDView() {
+        if (satelliteViewListener) { satelliteViewListener(); satelliteViewListener = null; }
+        viewer.trackedEntity = undefined;
+        viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+
+        const listener = function() {
+            const t = viewer.clock.currentTime;
+            const pos = positionProperty.getValue(t);
+            const quat = orientationProperty.getValue(t);
+            if (!pos || !quat) return;
+
+            // Satellite body axes
+            const axes = getBodyAxes(quat);
+            const forward = Cesium.Cartesian3.normalize(axes.z, new Cesium.Cartesian3());
+            const up = Cesium.Cartesian3.normalize(axes.y, new Cesium.Cartesian3());
+
+            // Rotate up by -90° around forward (same convention as satellite view)
+            const rotQuat = Cesium.Quaternion.fromAxisAngle(forward, Cesium.Math.toRadians(-90));
+            const rotMat = Cesium.Matrix3.fromQuaternion(rotQuat, new Cesium.Matrix3());
+            const rotatedUp = Cesium.Matrix3.multiplyByVector(rotMat, up, new Cesium.Cartesian3());
+
+            // Get actual altitude from position
+            const cartographic = Cesium.Cartographic.fromCartesian(pos);
+            const altitudeM = cartographic.height; // meters
+
+            // Compute FOV so that 1 screen pixel = CAMERA_GSD meters on ground
+            const canvasHeight = viewer.canvas.height;
+            const canvasWidth = viewer.canvas.width;
+            const vfov = 2 * Math.atan(canvasHeight * CAMERA_GSD / (2 * altitudeM));
+
+            // Set camera at satellite position, looking along body Z
+            viewer.camera.position = Cesium.Cartesian3.clone(pos);
+            viewer.camera.direction = forward;
+            viewer.camera.up = rotatedUp;
+            viewer.camera.frustum.fov = vfov;
+
+            // Update GSD overlay info
+            const groundW = (canvasWidth * CAMERA_GSD).toFixed(0);
+            const groundH = (canvasHeight * CAMERA_GSD).toFixed(0);
+            const fovDeg = Cesium.Math.toDegrees(vfov);
+
+            const coverageEl = document.getElementById('gsdCoverageDisplay');
+            const altEl = document.getElementById('gsdAltDisplay');
+            const fovEl = document.getElementById('gsdFovDisplay');
+            if (coverageEl) coverageEl.textContent = groundW + ' x ' + groundH + ' m';
+            if (altEl) altEl.textContent = (altitudeM / 1000).toFixed(1) + ' km';
+            if (fovEl) fovEl.textContent = fovDeg.toFixed(4) + String.fromCharCode(176);
+
+            // Update scale bar
+            updateGSDScalebar(canvasWidth);
+        };
+        satelliteViewListener = viewer.scene.preUpdate.addEventListener(listener);
+    }
+
+    function updateGSDScalebar(canvasWidth) {
+        const niceDistances = [10, 20, 50, 100, 200, 500];
+        const maxBarPx = canvasWidth * 0.3;
+        let bestDist = niceDistances[0];
+        for (const d of niceDistances) {
+            if (d / CAMERA_GSD <= maxBarPx) bestDist = d;
+        }
+        const barPx = bestDist / CAMERA_GSD;
+        const barLine = document.getElementById('gsdScalebarLine');
+        const barText = document.getElementById('gsdScalebarText');
+        if (barLine) barLine.style.width = barPx + 'px';
+        if (barText) barText.textContent = bestDist + ' m';
+    }
+
+    // ================== Telemetry UI ==================
+    let telemetryExpanded = false;
+    function toggleTelemetryDetails() {
+        telemetryExpanded = !telemetryExpanded;
+        const details = document.getElementById('telemetryDetails');
+        const icon = document.getElementById('telemetryToggleIcon');
+        if (telemetryExpanded) { details.classList.add('expanded'); icon.classList.add('expanded'); }
+        else { details.classList.remove('expanded'); icon.classList.remove('expanded'); }
+    }
+
+    function updateTelemetryDisplay(data) {
+        try {
+            if (data.ctrl_mode !== undefined) updateBackendModeDisplay(data.ctrl_mode, data.ctrl_mode_name);
+            
+            // Calc LLA
+            let altitude = '--', lat = '--', lon = '--';
+            if (data.position_ecef) {
+                try {
+                    const lla = ecefToLla(data.position_ecef[0], data.position_ecef[1], data.position_ecef[2]);
+                    altitude = formatNumber(lla.altitude / 1000, 1) + ' km';
+                    lat = formatNumber(lla.latitude, 2) + '°'; lon = formatNumber(lla.longitude, 2) + '°';
+                } catch (e) {}
+            }
+
+            document.getElementById('summaryMode').textContent = data.ctrl_mode !== undefined ? `${data.ctrl_mode}: ${(data.ctrl_mode_name || modeNames[data.ctrl_mode]).substring(0, 12)}` : '--';
+            document.getElementById('summaryTime').textContent = data.time !== undefined ? formatNumber(data.time, 0) + 's' : '--';
+
+            // Textual Details
+            let detailsHtml = `
+                <div class="telemetry-section" style="margin-top:0; padding-top:0; border-top:none;">
+                    <div class="section-title">TIME</div>
+                    <div>Sim Time: ${formatNumber(data.time, 1)} s</div>
+                    <div>Date: ${data.simDate || 'N/A'}</div>
+                </div>
+            `;
+            if (data.ctrl_mode !== undefined) {
+                detailsHtml += `<div class="mode-indicator mode-${data.ctrl_mode}">${data.ctrl_mode} - ${data.ctrl_mode_name || modeNames[data.ctrl_mode]}</div>`;
+            }
+            if (data.position_ecef) {
+                detailsHtml += `<div class="telemetry-section"><div class="section-title">POSITION</div>
+                    <div style="display:flex; justify-content:space-between;"><span>Lat:</span> <span style="color:white">${lat}</span></div>
+                    <div style="display:flex; justify-content:space-between;"><span>Lon:</span> <span style="color:white">${lon}</span></div>
+                    <div style="display:flex; justify-content:space-between;"><span>Alt:</span> <span style="color:white">${altitude}</span></div></div>`;
+            }
+            if (data.pointing_error_deg !== undefined) {
+                const c = data.pointing_error_deg < 1 ? '#4caf50' : data.pointing_error_deg < 5 ? '#ff9800' : '#f44336';
+                detailsHtml += `<div class="telemetry-section"><div class="section-title">POINTING ERROR</div><div style="font-size: 18px; font-weight: bold; color: ${c}; text-align:right;">${formatNumber(data.pointing_error_deg, 3)}°</div></div>`;
+            }
+            if (data.wheel_speeds_rpm) {
+                detailsHtml += `<div class="telemetry-section"><div class="section-title">WHEEL SPEED (rpm)</div>
+                    <div style="display:flex; justify-content:space-between;"><span>X:</span> <span style="color:white">${formatNumber(data.wheel_speeds_rpm[0], 1)}</span></div>
+                    <div style="display:flex; justify-content:space-between;"><span>Y:</span> <span style="color:white">${formatNumber(data.wheel_speeds_rpm[1], 1)}</span></div>
+                    <div style="display:flex; justify-content:space-between;"><span>Z:</span> <span style="color:white">${formatNumber(data.wheel_speeds_rpm[2], 1)}</span></div></div>`;
+            }
+
+            // Target Pointing info (Mode 7)
+            if (data.ctrl_mode === 7 && data.target_name) {
+                const onaColor = data.off_nadir_deg < 30 ? '#4caf50' : data.off_nadir_deg < 60 ? '#ff9800' : '#f44336';
+                detailsHtml += `<div class="telemetry-section"><div class="section-title" style="color:#e879f9;">🎯 TARGET: ${data.target_name}</div>
+                    <div style="display:flex; justify-content:space-between;"><span>LOS Distance:</span> <span style="color:white">${formatNumber(data.los_distance_km, 1)} km</span></div>
+                    <div style="display:flex; justify-content:space-between;"><span>Off-Nadir:</span> <span style="color:${onaColor}">${formatNumber(data.off_nadir_deg, 1)}°</span></div></div>`;
+            }
+
+            // Toggle target entities visibility based on mode
+            const isTargetMode = (data.ctrl_mode === 7);
+            if (targetMarker) targetMarker.show = isTargetMode;
+            if (targetLosLine) targetLosLine.show = isTargetMode;
+
+            // Update target ECEF position for LOS line rendering
+            if (isTargetMode && data.target_ecef) {
+                targetEcef = new Cesium.Cartesian3(data.target_ecef[0], data.target_ecef[1], data.target_ecef[2]);
+            } else {
+                targetEcef = null;
+            }
+            
+            document.getElementById('telemetryDetailsContent').innerHTML = detailsHtml;
+            updateCharts(data);
+
+        } catch (error) { console.error("updateTelemetryDisplay error:", error); }
+    }
+
+    // ================== Keyboard Controls ==================
+    const keyToButtonId = { 'KeyW': 'btn-w', 'KeyS': 'btn-s', 'KeyA': 'btn-a', 'KeyD': 'btn-d', 'KeyQ': 'btn-q', 'KeyE': 'btn-e', 'Space': 'btn-space' };
+
+    function activateButton(id) { const btn = document.getElementById(id); if (btn) btn.classList.add('active'); }
+    function deactivateButton(id) { const btn = document.getElementById(id); if (btn) btn.classList.remove('active'); }
+
+    function sendAttitudeCommand(command) {
+        if (!isConnected || currentControlMode !== 4) return;
+        socket.send(JSON.stringify({ command: command }));
+    }
+
+    function updateAttitudeControlPanelVisibility() {
+        const panel = document.getElementById('attitudeControlPanel');
+        if (panel) panel.classList.toggle('visible', currentControlMode === 4);
+    }
+
+    function setupAttitudeControlButtons() {
+        document.querySelectorAll('.dpad-btn-group, .roll-btn').forEach(btn => {
+            const cmd = btn.dataset.command;
+            if (!cmd) return;
+            const startHandler = (e) => { e.preventDefault(); btn.classList.add('active'); sendAttitudeCommand(cmd); };
+            const endHandler = (e) => { btn.classList.remove('active'); };
+            btn.addEventListener('mousedown', startHandler); btn.addEventListener('mouseup', endHandler); btn.addEventListener('mouseleave', endHandler);
+            btn.addEventListener('touchstart', startHandler, {passive: false}); btn.addEventListener('touchend', endHandler); btn.addEventListener('touchcancel', endHandler);
+        });
+    }
+
+    function setupKeyboardControls() {
+        document.addEventListener('keydown', function(event) {
+            if (['F1','F2','F3','F4'].includes(event.code)) event.preventDefault();
+            if (event.code === 'F1') switchCameraMode(0);
+            if (event.code === 'F2') switchCameraMode(1);
+            if (event.code === 'F3') switchCameraMode(2);
+            if (event.code === 'F4') switchCameraMode(3);
+            if (['Digit0','Numpad0'].includes(event.code)) setControlMode(0);
+            if (['Digit1','Numpad1'].includes(event.code)) setControlMode(1);
+            if (['Digit2','Numpad2'].includes(event.code)) setControlMode(2);
+            if (['Digit3','Numpad3'].includes(event.code)) setControlMode(3);
+            if (['Digit4','Numpad4'].includes(event.code)) setControlMode(4);
+            if (['Digit5','Numpad5'].includes(event.code)) setControlMode(5);
+            if (['Digit7','Numpad7'].includes(event.code)) setControlMode(7);
+
+            if (!isConnected || currentControlMode !== 4) return;
+            let command = '';
+            switch (event.code) {
+                case 'KeyW': command = 'increase_pitch'; break;
+                case 'KeyS': command = 'decrease_pitch'; break;
+                case 'KeyA': command = 'yaw_left'; break;
+                case 'KeyD': command = 'yaw_right'; break;
+                case 'KeyQ': command = 'increase_roll'; break;
+                case 'KeyE': command = 'decrease_roll'; break;
+                case 'Space': command = 'stop_rotation'; event.preventDefault(); break;
+            }
+            const btnId = keyToButtonId[event.code];
+            if (command && btnId) { activateButton(btnId); socket.send(JSON.stringify({ command: command })); }
+        });
+
+        document.addEventListener('keyup', function(event) {
+            const btnId = keyToButtonId[event.code];
+            if (btnId) deactivateButton(btnId);
+        });
+    }
+
+    // ================== Chart.js (HUD Style) ==================
+    function initCharts() {
+        const chartConfig = {
+            type: 'line',
+            options: {
+                responsive: true, maintainAspectRatio: false, animation: false,
+                interaction: { mode: 'none' },
+                plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                scales: {
+                    x: { display: false, type: 'linear', min: 0 },
+                    y: {
+                        display: true, position: 'right',
+                        grid: { color: 'rgba(255, 255, 255, 0.05)', drawBorder: false, tickLength: 0 },
+                        ticks: { color: '#475569', font: { size: 9, family: 'monospace' }, maxTicksLimit: 3, padding: 5 },
+                        border: { display: false }
+                    }
+                },
+                elements: { point: { radius: 0, hitRadius: 0 }, line: { borderWidth: 1.5, tension: 0.4 } }
+            }
+        };
+
+        function createDatasets(ctx) {
+            const gradientCmd = ctx.createLinearGradient(0, 0, 0, 80);
+            gradientCmd.addColorStop(0, 'rgba(59, 130, 246, 0.3)'); gradientCmd.addColorStop(1, 'rgba(59, 130, 246, 0.0)');
+            const gradientAct = ctx.createLinearGradient(0, 0, 0, 80);
+            gradientAct.addColorStop(0, 'rgba(239, 68, 68, 0.3)'); gradientAct.addColorStop(1, 'rgba(239, 68, 68, 0.0)');
+
+            return {
+                datasets: [
+                    { label: 'Command', data: [], borderColor: '#3b82f6', backgroundColor: gradientCmd, fill: true, order: 2 },
+                    { label: 'Actual', data: [], borderColor: '#ef4444', backgroundColor: gradientAct, fill: true, order: 1 }
+                ]
+            };
+        }
+
+        const chartIds = { rollRate: 'chartRollRate', pitchRate: 'chartPitchRate', yawRate: 'chartYawRate', rollAtt: 'chartRollAtt', pitchAtt: 'chartPitchAtt', yawAtt: 'chartYawAtt' };
+        for (const [key, canvasId] of Object.entries(chartIds)) {
+            const canvas = document.getElementById(canvasId);
+            if (canvas) {
+                const ctx = canvas.getContext('2d');
+                charts[key] = new Chart(ctx, { ...chartConfig, data: createDatasets(ctx) });
+            }
+        }
+        console.log("Charts initialized with HUD design");
+    }
+
+    function updateCharts(data) {
+        if (!data.time) return;
+        const time = data.time;
+        const angVel = data.angularVelocity || [0, 0, 0];
+        const targetRates = data.targetRates || [0, 0, 0];
+        const eulerActual = data.euler321_actual_deg || [0, 0, 0];
+        const eulerCmd = data.euler321_cmd_deg || [0, 0, 0];
+
+        // Convert rad/s to deg/s
+        const rollRateAct = angVel[0] * 180 / Math.PI;
+        const pitchRateAct = angVel[1] * 180 / Math.PI;
+        const yawRateAct = angVel[2] * 180 / Math.PI;
+
+        graphData.time.push(time);
+        graphData.rollRateCmd.push(targetRates[0]); graphData.rollRateAct.push(rollRateAct);
+        graphData.pitchRateCmd.push(targetRates[1]); graphData.pitchRateAct.push(pitchRateAct);
+        graphData.yawRateCmd.push(targetRates[2]); graphData.yawRateAct.push(yawRateAct);
+        graphData.rollAttCmd.push(eulerCmd[0]); graphData.rollAttAct.push(eulerActual[0]);
+        graphData.pitchAttCmd.push(eulerCmd[1]); graphData.pitchAttAct.push(eulerActual[1]);
+        graphData.yawAttCmd.push(eulerCmd[2]); graphData.yawAttAct.push(eulerActual[2]);
+
+        while (graphData.time.length > MAX_DATA_POINTS) {
+            graphData.time.shift();
+            graphData.rollRateCmd.shift(); graphData.rollRateAct.shift();
+            graphData.pitchRateCmd.shift(); graphData.pitchRateAct.shift();
+            graphData.yawRateCmd.shift(); graphData.yawRateAct.shift();
+            graphData.rollAttCmd.shift(); graphData.rollAttAct.shift();
+            graphData.pitchAttCmd.shift(); graphData.pitchAttAct.shift();
+            graphData.yawAttCmd.shift(); graphData.yawAttAct.shift();
+        }
+
+        // Update Text UI
+        const setVal = (id, val) => { const el = document.getElementById(id); if(el) el.textContent = formatNumber(val, 2); };
+        setVal('valRollCmd', targetRates[0]); setVal('valRollAct', rollRateAct);
+        setVal('valPitchCmd', targetRates[1]); setVal('valPitchAct', pitchRateAct);
+        setVal('valYawCmd', targetRates[2]); setVal('valYawAct', yawRateAct);
+        setVal('valRollAttCmd', eulerCmd[0]); setVal('valRollAttAct', eulerActual[0]);
+        setVal('valPitchAttCmd', eulerCmd[1]); setVal('valPitchAttAct', eulerActual[1]);
+        setVal('valYawAttCmd', eulerCmd[2]); setVal('valYawAttAct', eulerActual[2]);
+
+        // Update Graphs
+        const timeData = graphData.time;
+        const minTime = timeData[0] || 0;
+        const maxTime = timeData[timeData.length - 1] || 100;
+
+        function updateSingleChart(chart, cmdData, actData) {
+            if (!chart) return;
+            chart.data.datasets[0].data = timeData.map((t, i) => ({ x: t, y: cmdData[i] }));
+            chart.data.datasets[1].data = timeData.map((t, i) => ({ x: t, y: actData[i] }));
+            chart.options.scales.x.min = minTime;
+            chart.options.scales.x.max = maxTime;
+            chart.update('none');
+        }
+
+        updateSingleChart(charts.rollRate, graphData.rollRateCmd, graphData.rollRateAct);
+        updateSingleChart(charts.pitchRate, graphData.pitchRateCmd, graphData.pitchRateAct);
+        updateSingleChart(charts.yawRate, graphData.yawRateCmd, graphData.yawRateAct);
+        updateSingleChart(charts.rollAtt, graphData.rollAttCmd, graphData.rollAttAct);
+        updateSingleChart(charts.pitchAtt, graphData.pitchAttCmd, graphData.pitchAttAct);
+        updateSingleChart(charts.yawAtt, graphData.yawAttCmd, graphData.yawAttAct);
+    }
+
+    function initialize() {
+        initCesium();
+        initCharts();
+        setupKeyboardControls();
+        setupAttitudeControlButtons();
+        connectWebSocket();
+        updateAttitudeControlPanelVisibility();
+        updateModeButtonsUI(currentControlMode);
+        console.log("Application initialized - v7 HUD");
+    }
+
+    document.addEventListener('DOMContentLoaded', initialize);
+    </script>
+</body>
+</html>

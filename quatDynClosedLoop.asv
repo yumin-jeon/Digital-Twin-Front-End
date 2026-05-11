@@ -1,0 +1,353 @@
+%% quatDynClosedLoop.m
+%% script for solving rigid body dynamics and kinematics with closed loop control
+%% Author: Zizung Yoon
+%% (Edited) Body-frame axes (bX,bY,bZ) visualization added in Attitude Animation
+%% (Edited) quat2dcm input shape fixed (1x4 row)
+
+close all
+clear all
+display('Run simulation');
+
+%% Constants
+mu_earth = 398600.4418;       % [km^3/s^2]
+R_earth  = 6378.137;          % [km] Earth equatorial radius
+J2       = 1.08262668e-3;     % [-] Earth's J2 coefficient
+
+%% Define orbital elements
+a     = 7000;              % SMA [km]
+e     = 0.01;              % eccentricity
+i     = deg2rad(98);       % inclination [rad]
+RAAN  = deg2rad(90);       % RAAn  [rad]
+omega = deg2rad(20);       % Arg. of Perigee  [rad]
+theta = deg2rad(0);        % true anomaly [rad]
+
+% Get state vector
+[rsat_eci0, vsat_eci0] = kepler2rv(a, e, i, RAAN, omega, theta, mu_earth);
+
+%% satellite property
+I_b  = [5 0 0; 0 6 0; 0 0 7];      % moi satellite [kgm^2]
+I_rw = [.01 0 0; 0 .01 0; 0 0 .01];% moi wheel [kgm^2]
+
+%% initial condition
+q0 = [0.7071; 0.7071; 0; 0];       % sat attitude w.r.t inertial frame, ECI2SAT (scalar-first), 4:7 : ECI의 기저벡터가 satelite 동체좌표계에서 어떻게 표현되는가
+om_sat0 = deg2rad([0; 0; 0]);      % sat angular rate [rad/s]
+om_rw0  = convangvel([0;0;0],'rpm','rad/s'); % wheel rate [rad/s]
+
+x0 = [om_sat0; q0; om_rw0; rsat_eci0; vsat_eci0]; % initial state vector
+
+T_ext = [-0; 0; 1.0]; % external torque [Nms]
+T_rw  = [0.00; 0.0; 0.0];% wheel torque in body frame [Nms]
+
+%% simulation setting
+tstep = 1;    % step for ode solver [s]
+te    = 2000;  % sim end time [s]
+
+qCMD_ECI2SAT = [0;1;0;0]; % quaternion from ECI to CMD
+global omTrgt_sat % for real time key press update
+omTrgt_sat = deg2rad([1; 1; 1]); % target angular rate of sat for rate control
+
+conf.ctrl = 2; % 0: no control 1: constant RW torque 2:IPM 3:NPM 4: interactive 5: momentum bias
+conf.T_ext = 2; % 0: off 1: constant 2: damping
+
+switch conf.ctrl
+    case 0
+        disp('Mode 0: no control torque')
+    case 1
+        disp('Mode 1: constant RW torque')
+    case 2
+        disp('Mode 2: Inertial Pointing - quaternion feedback')
+    case 3
+        disp('Mode 3: Nadir Pointing - quaternion feedback')
+    case 4
+        disp('Mode 4: Interactive Mode with angular rate control')
+        global fig
+        fig = figure('Name', 'Press keys here!', ...
+                     'KeyPressFcn', @key_callback, ...
+                     'NumberTitle', 'off');
+        disp('Click the figure window and use arrow keys or PageUp/PageDown');
+    case 5
+        disp('Mode 5: momentum bias')
+    otherwise
+        warning('mode: wrong ctrl type')
+end
+
+%% pre allocation
+tc = zeros(1, te + 1);              % simulation time
+xs = zeros(length(x0), te + 1);     % state vector
+
+%% control loop
+odeopt = odeset('RelTol',1e-6,'AbsTol',1e-6,'InitialStep',1,'MaxStep',1);
+
+t = 0;
+xs(:,1) = x0;
+
+for n = 1:te
+    [ts, y] = ode45(@(t,x)rhs_matlab(t,x, I_b, I_rw, T_ext, T_rw, mu_earth, J2, R_earth), ...
+                    (t:t+tstep), xs(:,t+1), odeopt);
+
+    t = ts(end);
+    tc(n+1) = t;
+    xs(:,n+1) = y(end,:).';
+
+    % External torque option
+    switch conf.T_ext
+        case 0
+            T_ext = [0;0;0];
+        case 1
+            % (constant) keep T_ext as is
+        case 2
+            T_ext = ctrlDamp(xs(1:3,t+1)); % damp satellite rate
+    end
+
+    % Control torque
+    switch conf.ctrl
+        case 0
+            t_ctrl = [0;0;0];
+
+        case 1
+            % qTrgt_eci must exist if you use mode 1 (kept as original structure)
+            qErr = quatMult(quatInv(qTrgt_eci), xs(4:7,t+1));
+            qErr = qErr / norm(qErr);
+            qE(:,t+1) = qErr;
+            t_ctrl = T_rw;
+
+        case 2  % Inertial Pointing
+            qErr= quatMult(qCMD_ECI2SAT, quatInv(xs(4:7,t+1))); % xs(4:7,t+1): ECI2SAT, quatInv(xs(4:7,t+1)): SAT2ECI -> ECI좌표계에서 SAT 좌표계의 기저벡터가 어떻게 보이는가
+            qErr = qErr / norm(qErr);
+            qE(:,t+1) = qErr;        % qErr: 
+            t_ctrl = ctrlRwQuat(I_b, qErr, xs(1:3,t+1)); % quaternion PD controller
+
+        case 3  % Nadir Pointing
+            z_hat = -xs(11:13,t+1) / norm(xs(11:13,t+1));      % LVLH Z: nadir-pointing, xs(11:13,t+1): 위성의 ECI 기준 위치벡터, 
+            y_hat = -cross(xs(11:13,t+1), xs(14:16,t+1));
+            y_hat = y_hat / norm(y_hat);                       % LVLH Y: -angular momentum
+            x_hat = cross(y_hat, z_hat);                       % LVLH X
+
+            R_eci2lvlh = [x_hat, y_hat, z_hat];                %%%%%%%이거 이름 반대로 된듯     
+            qTrgt_nadir = dcm2quat(R_eci2lvlh);    % qCMD_ECI2SAT 이거 걍 의미없음([1 0 0 0] -> 회전 아님), qTrgt_nadir: lvlh2eci
+            % dcm2quat은 패시브 변환 쿼토니언 나옴
+
+            qErr = quatMult(quatInv(qTrgt_nadir), xs(4:7,t+1));   %%%%%사실 lvlh2eci가 Inv되는듯. 따라서 quatInv(qTrgt_nadir): R_eci2lvlh ????? 이상함
+            % 인버스 걸어서 
+            qErr = qErr / norm(qErr);
+            qE(:,t+1) = qErr;
+            t_ctrl = ctrlRwQuat(I_b, qErr, xs(1:3,t+1));
+
+        case 4  % Interactive
+            disp(['time: ',num2str(t),' sec'])
+            t_ctrl = ctrlRwOm(I_b, omTrgt_sat, xs(1:3,t));
+            pause(0.1); drawnow;
+
+        case 5
+            t_ctrl  = ctrlRateDamping('x', I_b, xs(1:3,t+1), xs(1:3,t));
+            t_speed = -ctrlWheelspeed('z', xs(8:10,t+1), [0;0;20]);
+            t_ctrl(3) = t_speed(3);
+
+        otherwise
+            warning('mode: wrong ctrl type')
+            break
+    end
+
+    T_rw = actRW(t_ctrl); % RW as actuator
+end
+
+%% post processing
+om_sat     = xs(1:3,:);
+q_ECI2SAT  = xs(4:7,:);
+om_rw      = xs(8:10,:);
+r_sat      = xs(11:13,:);
+v_sat      = xs(14:16,:);
+
+om_sat_abs = sqrt(sum(om_sat.^2,1));
+r_sat_abs  = sqrt(sum(r_sat.^2,1));
+v_sat_abs  = sqrt(sum(v_sat.^2,1));
+
+om_sat_inert = quatvrot(q_ECI2SAT, om_sat);
+vec_nadir    = quatvrot(quatInv(q_ECI2SAT), -r_sat);
+om_sat_inert_abs = sqrt(sum(om_sat_inert.^2,1));
+
+H_sat = I_b  * om_sat;
+H_rw  = I_rw * om_rw;
+H_sat_abs = sqrt(sum(H_sat.^2,1));
+H_rw_abs  = sqrt(sum(H_rw.^2,1));
+H_tot_abs = sqrt(sum((H_sat+H_rw).^2,1));
+
+%% plot: rates, wheels, quaternion, momentum
+hfw = figure('name','satellite rate');
+
+subplot(2,2,1); hold on; grid on
+plot(tc, om_sat(1,:)*180/pi, '-r')
+plot(tc, om_sat(2,:)*180/pi, '-g')
+plot(tc, om_sat(3,:)*180/pi, '-b')
+plot(tc, om_sat_abs*180/pi, 'k')
+xlabel('t [s]'); ylabel('\omega [deg/s]'); title('satellite rate')
+legend('\omega_x','\omega_y','\omega_z','\omega_{abs}')
+
+subplot(2,2,2); hold on; grid on
+plot(tc, om_rw(1,:)*30/pi, 'r')
+plot(tc, om_rw(2,:)*30/pi, 'g')
+plot(tc, om_rw(3,:)*30/pi, 'b')
+xlabel('t [s]'); ylabel('\omega_i [rpm]'); title('wheel rate')
+legend('\omega_x','\omega_y','\omega_z')
+
+subplot(2,2,3); hold on; grid on
+plot(tc, q_ECI2SAT(1,:), 'k')
+plot(tc, q_ECI2SAT(2,:), 'r')
+plot(tc, q_ECI2SAT(3,:), 'g')
+plot(tc, q_ECI2SAT(4,:), 'b')
+xlabel('t [s]'); ylabel('q_i'); title('Attitude Quaternion')
+legend('q_s','q_x','q_y','q_z')
+
+subplot(2,2,4); hold on; grid on
+plot(tc, H_sat_abs, 'r')
+plot(tc, H_rw_abs, 'g')
+plot(tc, H_tot_abs,'k')
+xlabel('t [s]'); ylabel('H [Nms]'); title('angular momentum')
+legend('|H_{sat}|','|H_{rw}|','|H_{tot}|')
+
+if (conf.ctrl == 2) || (conf.ctrl == 3)
+    figure('name','quaternion'); hold on; grid on
+    plot(tc, qE(1,:), 'k'); plot(tc, qE(2,:), 'r'); plot(tc, qE(3,:), 'g'); plot(tc, qE(4,:), 'b')
+    xlabel('t [s]'); ylabel('q_E'); title('Error Quaternion')
+    legend('q_s','q_x','q_y','q_z')
+end
+
+%% Raw Body Fixed
+figure('name','Raw Body Fixed'); hold on; grid on; axis equal
+plot3(om_sat(1,:), om_sat(2,:), om_sat(3,:), 'r')
+plot3(om_sat0(1), om_sat0(2), om_sat0(3), 'p', 'MarkerSize',10, 'MarkerFaceColor',[1 .6 .6]);
+plot_sphere(norm(om_sat0), 0.6);
+xlabel('\omega_x [rad/s]'); ylabel('\omega_y [rad/s]'); zlabel('\omega_z [rad/s]')
+title('Satellite Rate, Body Fixed')
+legend('\omega_{sat}','\omega_{0}')
+
+%% Unit Sphere Body Fixed Frame
+figure('name','Unit Sphere Body Fixed');
+plot3(H_sat(1,:)./H_sat_abs, H_sat(2,:)./H_sat_abs, H_sat(3,:)./H_sat_abs,'r.'); hold on;
+plot3(om_sat(1,:)./om_sat_abs, om_sat(2,:)./om_sat_abs, om_sat(3,:)./om_sat_abs,'r');
+plot3((H_sat(1,:)+H_rw(1,:))./H_tot_abs, (H_sat(2,:)+H_rw(2,:))./H_tot_abs, (H_sat(3,:)+H_rw(3,:))./H_tot_abs,'k.');
+plot3(om_sat0(1)/norm(om_sat0), om_sat0(2)/norm(om_sat0), om_sat0(3)/norm(om_sat0), ...
+      'p','MarkerSize',10,'MarkerFaceColor',[1 .6 .6]);
+plot_sphere(1, 0.6);
+grid on; axis equal
+title('Unit Sphere, Body Fixed Frame')
+legend('H_{Sat}','\omega_{Sat}','H_{total}')
+
+%% Plot Orbit
+fig = figure('name','Orbit');
+pl1 = plot3(rsat_eci0(1,1), rsat_eci0(2,1), rsat_eci0(3,1), 'Color','b', 'Marker','*', 'DisplayName','start');
+hold on
+pl2 = plot3(r_sat(1,:), r_sat(2,:), r_sat(3,:), 'Color','b', 'LineStyle','-', 'DisplayName','trajectory');
+plot_sphere(R_earth,1.0);
+grid on; axis equal
+xlabel('x [km]'); ylabel('y [km]'); zlabel('z [km]');
+title('Satellite Orbit (Cowell + J2)');
+legend([pl1(1), pl2(1)]);
+
+%% Plot Attitude Animation
+[element,idx] = satellite3d(0);
+scale = 5;
+figure('name','Attitude Animation');
+
+% plot initial satellite mesh
+for ii = 1:idx
+    hp1{ii} = patch('Vertices', element{ii}.XYZ, ...
+                    'Faces', element{ii}.faces, ...
+                    'FaceColor', element{ii}.facecolor, ...
+                    'EdgeColor', element{ii}.edgecolor, ...
+                    'LineWidth', element{ii}.LineWidth);
+    hold on
+end
+
+% initial vectors
+hp2 = plot3(scale*[0, om_sat_inert(1,1)./om_sat_abs(1)], ...
+            scale*[0, om_sat_inert(2,1)./om_sat_abs(1)], ...
+            scale*[0, om_sat_inert(3,1)./om_sat_abs(1)], ...
+            '-', 'Color',[0.4940 0.1840 0.5560], 'Marker','.', 'LineWidth',1);
+
+hp4 = plot3(scale*[0,-r_sat(1,1)/r_sat_abs(1)], ...
+            scale*[0,-r_sat(2,1)/r_sat_abs(1)], ...
+            scale*[0,-r_sat(3,1)/r_sat_abs(1)], ...
+            '-m', 'Marker','.', 'LineWidth',1);
+hp5 = text(-r_sat(1,1)/r_sat_abs(1)*scale, -r_sat(2,1)/r_sat_abs(1)*scale, -r_sat(3,1)/r_sat_abs(1)*scale, ...
+           'Nadir', 'Color','m', 'FontSize',12);
+
+hp6 = plot3(scale*[0, v_sat(1,1)/v_sat_abs(1)], ...
+            scale*[0, v_sat(2,1)/v_sat_abs(1)], ...
+            scale*[0, v_sat(3,1)/v_sat_abs(1)], ...
+            '-c', 'Marker','.', 'LineWidth',1);
+hp7 = text(v_sat(1,1)/v_sat_abs(1)*scale, v_sat(2,1)/v_sat_abs(1)*scale, v_sat(3,1)/v_sat_abs(1)*scale, ...
+           'Vel', 'Color','c', 'FontSize',12);
+
+hp3 = annotation('textbox', [0.80, 0.9, 0.1, 0.1]);
+
+plot_frame(scale);
+hold on;
+grid on; xlabel('X'); ylabel('Y'); zlabel('Z');
+axis equal
+view([-1,1,0.5]);
+xlim([-scale*1.5, scale*1.5]); ylim([-scale*1.5, scale*1.5]); zlim([-scale*1.5, scale*1.5]);
+
+%% ===== (ADDED) Body frame axes (bX,bY,bZ) initial draw =====
+T_SAT2ECI0 = quat2dcm(q_ECI2SAT(:,1).').';   % SAT -> ECI (columns are body axes in ECI)
+bX0 = T_SAT2ECI0(:,1);  bY0 = T_SAT2ECI0(:,2);  bZ0 = T_SAT2ECI0(:,3);
+
+hbX = plot3([0 scale*bX0(1)], [0 scale*bX0(2)], [0 scale*bX0(3)], 'r--', 'LineWidth', 2);
+hbY = plot3([0 scale*bY0(1)], [0 scale*bY0(2)], [0 scale*bY0(3)], 'g--', 'LineWidth', 2);
+hbZ = plot3([0 scale*bZ0(1)], [0 scale*bZ0(2)], [0 scale*bZ0(3)], 'b--', 'LineWidth', 2);
+
+htbX = text(scale*1.08*bX0(1), scale*1.08*bX0(2), scale*1.08*bX0(3), 'bX', 'Color','r', 'FontWeight','bold');
+htbY = text(scale*1.08*bY0(1), scale*1.08*bY0(2), scale*1.08*bY0(3), 'bY', 'Color','g', 'FontWeight','bold');
+htbZ = text(scale*1.08*bZ0(1), scale*1.08*bZ0(2), scale*1.08*bZ0(3), 'bZ', 'Color','b', 'FontWeight','bold');
+
+% update satellite
+for n = 1:te
+    T_SAT2ECI = quat2dcm(q_ECI2SAT(:,n).').';   % SAT -> ECI (FIXED SHAPE)
+
+    % rotate mesh
+    for ii = 1:idx
+        rotated_vertices = (T_SAT2ECI * element{ii}.XYZ')';
+        hp1{ii}.Vertices = rotated_vertices;
+    end
+
+    % ===== (ADDED) update BODY axes =====
+    bX = T_SAT2ECI(:,1);  bY = T_SAT2ECI(:,2);  bZ = T_SAT2ECI(:,3);
+    hbX.XData = [0 scale*bX(1)]; hbX.YData = [0 scale*bX(2)]; hbX.ZData = [0 scale*bX(3)];
+    hbY.XData = [0 scale*bY(1)]; hbY.YData = [0 scale*bY(2)]; hbY.ZData = [0 scale*bY(3)];
+    hbZ.XData = [0 scale*bZ(1)]; hbZ.YData = [0 scale*bZ(2)]; hbZ.ZData = [0 scale*bZ(3)];
+
+    htbX.Position = scale*1.08*[bX(1) bX(2) bX(3)];
+    htbY.Position = scale*1.08*[bY(1) bY(2) bY(3)];
+    htbZ.Position = scale*1.08*[bZ(1) bZ(2) bZ(3)];
+
+    % omega trace + vector
+    plot3(scale*om_sat_inert(1,n)./om_sat_abs(n), scale*om_sat_inert(2,n)./om_sat_abs(n), scale*om_sat_inert(3,n)./om_sat_abs(n), ...
+          '-.','Color',[0.4940 0.1840 0.5560]);
+
+    hp2.XData = scale*[0, om_sat_inert(1,n)./om_sat_abs(n)];
+    hp2.YData = scale*[0, om_sat_inert(2,n)./om_sat_abs(n)];
+    hp2.ZData = scale*[0, om_sat_inert(3,n)./om_sat_abs(n)];
+    hp2.DisplayName = sprintf('\\omega_{Sat}: [%5.2f %5.2f %5.2f] deg/s', ...
+                              om_sat(1,n)*180/pi, om_sat(2,n)*180/pi, om_sat(3,n)*180/pi);
+
+    % nadir vector
+    hp4.XData = scale*[0, -r_sat(1,n)/r_sat_abs(n)];
+    hp4.YData = scale*[0, -r_sat(2,n)/r_sat_abs(n)];
+    hp4.ZData = scale*[0, -r_sat(3,n)/r_sat_abs(n)];
+    hp4.DisplayName = sprintf('nadir: [%5.2f %5.2f %5.2f]', ...
+                              -r_sat(1,n)/r_sat_abs(n), -r_sat(2,n)/r_sat_abs(n), -r_sat(3,n)/r_sat_abs(n));
+    hp5.Position = scale*1.05 * [-r_sat(1,n)/r_sat_abs(n), -r_sat(2,n)/r_sat_abs(n), -r_sat(3,n)/r_sat_abs(n)];
+
+    % velocity vector
+    hp6.XData = scale*[0, v_sat(1,n)/v_sat_abs(n)];
+    hp6.YData = scale*[0, v_sat(2,n)/v_sat_abs(n)];
+    hp6.ZData = scale*[0, v_sat(3,n)/v_sat_abs(n)];
+    hp6.DisplayName = sprintf('orb vel: [%5.2f %5.2f %5.2f]', ...
+                              v_sat(1,n)/v_sat_abs(n), v_sat(2,n)/v_sat_abs(n), v_sat(3,n)/v_sat_abs(n));
+    hp7.Position = scale*1.05 * [v_sat(1,n)/v_sat_abs(n), v_sat(2,n)/v_sat_abs(n), v_sat(3,n)/v_sat_abs(n)];
+
+    legend([hp2(1), hp4(1)], 'Location','northeast');
+    hp3.String = sprintf('t   = %5d sec\n', n);
+
+    drawnow;
+end

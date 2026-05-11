@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Satellite Control Visualization</title>
+
+    <!-- Cesium -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cesium/1.107.0/Cesium.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cesium/1.107.0/Widgets/widgets.css">
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <!-- Application CSS -->
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- ==================== Cesium 3D Viewport ==================== -->
+    <div id="cesiumContainer"></div>
+
+<!-- ==================== Mode Panel (Top-Left) ==================== -->
+<div class="mode-panel" id="modePanel">
+    <div class="mode-header" id="modeHeader" onclick="toggleModePanel()">
+        <h3 class="mode-current-text" id="currentModeText">7: Target Pointing</h3>
+        <span class="mode-toggle-icon" id="modeToggleIcon">&#9660;</span>
+    </div>
+    <div class="mode-list-container" id="modeList">
+        <div class="mode-buttons">
+sat only / sat + all button 
+            <!-- sat only / sat + all button -->
+            <div style="display:flex;gap:4px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,0.1);">
+                <button id="btnSatOnly"
+                    onclick="setTargetLayerMode('sat_only')"
+                    style="
+                        flex:1; padding:6px 0; font-size:10px;
+                        background:#555; color:#fff;
+                        border:none; border-radius:3px; cursor:pointer;
+                        letter-spacing:0.3px; 
+                        text-align:center !important;
+                        display:flex; align-items:center; justify-content:center;
+                    ">
+                    Sat Only
+                </button>
+                <button id="btnSatAll"
+                    onclick="setTargetLayerMode('sat_targets')"
+                    style="
+                        flex:1; padding:6px 0; font-size:10px;
+                        background:#10b981; color:#fff;
+                        border:none; border-radius:3px; cursor:pointer;
+                        letter-spacing:0.3px;
+                        text-align:center !important;
+                        display:flex; align-items:center; justify-content:center;
+                    ">
+                    Sat + All
+                </button>
+            </div>
+
+            <button id="mode0" onclick="setControlMode(0)"><span>0: No Control</span> <span class="key-hint">[0]</span></button>
+            <button id="mode1" onclick="setControlMode(1)"><span>1: Rate Damping</span> <span class="key-hint">[1]</span></button>
+            <button id="mode2" onclick="setControlMode(2)"><span>2: Inertial Pointing</span> <span class="key-hint">[2]</span></button>
+            <button id="mode3" onclick="setControlMode(3)"><span>3: Nadir Pointing</span> <span class="key-hint">[3]</span></button>
+            <button id="mode4" onclick="setControlMode(4)"><span>4: Interactive</span> <span class="key-hint">[4]</span></button>
+            <button id="mode5" onclick="setControlMode(5)"><span>5: Momentum Bias</span> <span class="key-hint">[5]</span></button>
+            <button id="mode6" onclick="setControlMode(6)"><span>6: Headless</span> <span class="key-hint">[6]</span></button>
+            <button id="mode7" onclick="setControlMode(7)"><span>7: Target Pointing</span> <span class="key-hint">[7]</span></button>
+            <button id="mode8" onclick="setControlMode(8)"><span>8: Target Tracking</span> <span class="key-hint">[8]</span></button>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== Telemetry Panel (Top-Right) ==================== -->
+    <div class="status-panel" id="telemetryPanel">
+        <div class="telemetry-header" id="telemetryHeader" onclick="toggleTelemetryDetails()">
+            <div class="telemetry-header-left">
+                <span class="connection-indicator" id="connectionStatus"></span>
+                <h3>TELEMETRY</h3>
+            </div>
+            <span class="telemetry-toggle-icon" id="telemetryToggleIcon">&#9660;</span>
+        </div>
+        <div class="telemetry-summary" id="telemetrySummary">
+            <div class="telemetry-summary-row">
+                <span class="telemetry-summary-label">STATUS</span>
+                <span class="telemetry-summary-value" id="summaryStatus">DISCONNECTED</span>
+            </div>
+            <div class="telemetry-summary-row">
+                <span class="telemetry-summary-label">MODE</span>
+                <span class="telemetry-summary-value" id="summaryMode">--</span>
+            </div>
+            <div class="telemetry-summary-row">
+                <span class="telemetry-summary-label">TIME</span>
+                <span class="telemetry-summary-value" id="summaryTime">--</span>
+            </div>
+        </div>
+
+        <!-- ── Target Layer 상태 표시 ── -->
+        <div style="
+            padding: 6px 12px;
+            border-top: 1px solid rgba(255,255,255,0.08);
+            font-size: 11px;
+            color: #94a3b8;
+            font-family: inherit;
+        ">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;">
+                <input type="checkbox" id="chkHeading"
+                    onchange="onHeadingCheckbox(this.checked)"
+                    style="accent-color:#f59e0b;">
+                <label for="chkHeading" style="cursor:pointer;">Heading</label>
+            </div>
+            <div style="font-size:10px;color:#555;">
+                targets: <span id="targetCount" style="color:#10b981;">0</span>
+                &nbsp;|&nbsp;
+                window: <span id="targetSampleWindow" style="color:#666;">--</span>
+            </div>
+        </div>    
+
+        <div class="telemetry-details" id="telemetryDetails">
+            <div class="telemetry-details-content" id="telemetryDetailsContent"></div>
+
+            <!-- Angular Rate Graphs -->
+            <div class="graph-section">
+                <div class="graph-section-title">Angular Rate (deg/s)</div>
+                <div class="graph-card">
+                    <div class="graph-header">
+                        <span class="graph-label">Roll &omega;</span>
+                        <div class="graph-value-group">
+                            <span class="val-cmd" id="valRollCmd">0.00</span>
+                            <span class="val-act" id="valRollAct">0.00</span>
+                        </div>
+                    </div>
+                    <div class="graph-container"><canvas id="chartRollRate"></canvas></div>
+                </div>
+                <div class="graph-card">
+                    <div class="graph-header">
+                        <span class="graph-label">Pitch &omega;</span>
+                        <div class="graph-value-group">
+                            <span class="val-cmd" id="valPitchCmd">0.00</span>
+                            <span class="val-act" id="valPitchAct">0.00</span>
+                        </div>
+                    </div>
+                    <div class="graph-container"><canvas id="chartPitchRate"></canvas></div>
+                </div>
+                <div class="graph-card">
+                    <div class="graph-header">
+                        <span class="graph-label">Yaw &omega;</span>
+                        <div class="graph-value-group">
+                            <span class="val-cmd" id="valYawCmd">0.00</span>
+                            <span class="val-act" id="valYawAct">0.00</span>
+                        </div>
+                    </div>
+                    <div class="graph-container"><canvas id="chartYawRate"></canvas></div>
+                </div>
+                <div class="graph-legend">
+                    <div class="legend-item"><div class="legend-dot" style="background:#3b82f6"></div> CMD</div>
+                    <div class="legend-item"><div class="legend-dot" style="background:#ef4444"></div> ACT</div>
+                </div>
+            </div>
+
+            <!-- Attitude Graphs -->
+            <div class="graph-section">
+                <div class="graph-section-title">Attitude (Euler 321, deg)</div>
+                <div class="graph-card">
+                    <div class="graph-header">
+                        <span class="graph-label">Roll &phi;</span>
+                        <div class="graph-value-group">
+                            <span class="val-cmd" id="valRollAttCmd">0.00</span>
+                            <span class="val-act" id="valRollAttAct">0.00</span>
+                        </div>
+                    </div>
+                    <div class="graph-container"><canvas id="chartRollAtt"></canvas></div>
+                </div>
+                <div class="graph-card">
+                    <div class="graph-header">
+                        <span class="graph-label">Pitch &theta;</span>
+                        <div class="graph-value-group">
+                            <span class="val-cmd" id="valPitchAttCmd">0.00</span>
+                            <span class="val-act" id="valPitchAttAct">0.00</span>
+                        </div>
+                    </div>
+                    <div class="graph-container"><canvas id="chartPitchAtt"></canvas></div>
+                </div>
+                <div class="graph-card">
+                    <div class="graph-header">
+                        <span class="graph-label">Yaw &psi;</span>
+                        <div class="graph-value-group">
+                            <span class="val-cmd" id="valYawAttCmd">0.00</span>
+                            <span class="val-act" id="valYawAttAct">0.00</span>
+                        </div>
+                    </div>
+                    <div class="graph-container"><canvas id="chartYawAtt"></canvas></div>
+                </div>
+                <div class="graph-legend">
+                    <div class="legend-item"><div class="legend-dot" style="background:#3b82f6"></div> CMD</div>
+                    <div class="legend-item"><div class="legend-dot" style="background:#ef4444"></div> ACT</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== Camera Mode Info (Bottom-Left) ==================== -->
+    <div class="controls-info">
+        <h3>Camera Mode</h3>
+        <div style="display: flex; flex-direction: column; gap: 4px;">
+            <div><span class="key">F1</span> Tracking view</div>
+            <div><span class="key">F2</span> Satellite view (Wide)</div>
+            <div><span class="key">F3</span> Satellite view (Zoom)</div>
+            <div><span class="key">F4</span> GSD View (1px=0.3m)</div>
+            <div style="margin-top: 4px; color: #94a3b8;">Current: <span id="cameraMode" style="color: #f8fafc; font-weight: bold;">Tracking</span></div>
+        </div>
+    </div>
+
+    <!-- ==================== Attitude Control Pad (Bottom-Center) ==================== -->
+    <div class="attitude-control-panel" id="attitudeControlPanel">
+        <div class="dpad-container">
+            <svg viewBox="0 0 200 200" class="dpad-svg">
+                <g class="dpad-btn-group" data-command="increase_pitch" id="btn-w">
+                    <path d="M 128.3 71.7 L 163.6 36.4 A 90 90 0 0 0 36.4 36.4 L 71.7 71.7 A 40 40 0 0 1 128.3 71.7 Z" class="joy-btn-svg" />
+                    <text x="100" y="38" dy="1" text-anchor="middle" dominant-baseline="central" class="dpad-text">W</text>
+                </g>
+                <g class="dpad-btn-group" transform="rotate(90, 100, 100)" data-command="yaw_right" id="btn-d">
+                    <path d="M 128.3 71.7 L 163.6 36.4 A 90 90 0 0 0 36.4 36.4 L 71.7 71.7 A 40 40 0 0 1 128.3 71.7 Z" class="joy-btn-svg" />
+                    <text x="90" y="28" dy="1" transform="rotate(-90, 100, 28)" text-anchor="middle" dominant-baseline="central" class="dpad-text">D</text>
+                </g>
+                <g class="dpad-btn-group" transform="rotate(180, 100, 100)" data-command="decrease_pitch" id="btn-s">
+                    <path d="M 128.3 71.7 L 163.6 36.4 A 90 90 0 0 0 36.4 36.4 L 71.7 71.7 A 40 40 0 0 1 128.3 71.7 Z" class="joy-btn-svg" />
+                    <text x="100" y="18" dy="1" transform="rotate(-180, 100, 28)" text-anchor="middle" dominant-baseline="central" class="dpad-text">S</text>
+                </g>
+                <g class="dpad-btn-group" transform="rotate(270, 100, 100)" data-command="yaw_left" id="btn-a">
+                    <path d="M 128.3 71.7 L 163.6 36.4 A 90 90 0 0 0 36.4 36.4 L 71.7 71.7 A 40 40 0 0 1 128.3 71.7 Z" class="joy-btn-svg" />
+                    <text x="110" y="28" dy="1" transform="rotate(-270, 100, 28)" text-anchor="middle" dominant-baseline="central" class="dpad-text">A</text>
+                </g>
+                <g class="dpad-btn-group" data-command="stop_rotation" id="btn-space">
+                    <circle cx="100" cy="100" r="35" class="joy-btn-svg center-btn" />
+                    <text x="100" y="100" dy="1" text-anchor="middle" dominant-baseline="central" class="dpad-text small-text">Space</text>
+                </g>
+            </svg>
+        </div>
+        <div class="roll-buttons-row">
+            <button class="roll-btn joy-btn" id="btn-q" data-command="increase_roll">Q</button>
+            <button class="roll-btn joy-btn" id="btn-e" data-command="decrease_roll">E</button>
+        </div>
+    </div>
+
+    <!-- ==================== Direction Legend (Bottom-Right) ==================== -->
+    <div class="legend" id="legendPanel">
+        <h3>INDICATORS</h3>
+        <div class="legend-item">
+            <div class="legend-color" style="background-color: cyan; box-shadow: 0 0 5px cyan;"></div>
+            <div>Velocity</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background-color: orange; box-shadow: 0 0 5px orange;"></div>
+            <div>Nadir</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background-color: lime; box-shadow: 0 0 5px lime;"></div>
+            <div>North</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background-color: red; box-shadow: 0 0 5px red;"></div>
+            <div>South</div>
+        </div>
+    </div>
+
+    <!-- ==================== GSD View Overlay ==================== -->
+    <div class="gsd-overlay" id="gsdOverlay">
+        <div class="gsd-scalebar">
+            <div class="gsd-scalebar-line" id="gsdScalebarLine" style="width: 100px;"></div>
+            <div class="gsd-scalebar-text" id="gsdScalebarText">100 m</div>
+        </div>
+        <div class="gsd-info-bar">
+            <div><span class="gsd-label">GSD</span><br><span class="gsd-value" id="gsdValueDisplay">0.30 m/px</span></div>
+            <div><span class="gsd-label">Coverage</span><br><span class="gsd-value" id="gsdCoverageDisplay">-- x -- m</span></div>
+            <div><span class="gsd-label">Altitude</span><br><span class="gsd-value" id="gsdAltDisplay">-- km</span></div>
+            <div><span class="gsd-label">FOV</span><br><span class="gsd-value" id="gsdFovDisplay">--</span></div>
+        </div>
+    </div>
+
+    <!-- GSD Crosshair -->
+    <div class="gsd-crosshair" id="gsdCrosshair">
+        <svg viewBox="0 0 60 60">
+            <line x1="30" y1="5" x2="30" y2="22" stroke="rgba(255,255,255,0.5)" stroke-width="1"/>
+            <line x1="30" y1="38" x2="30" y2="55" stroke="rgba(255,255,255,0.5)" stroke-width="1"/>
+            <line x1="5" y1="30" x2="22" y2="30" stroke="rgba(255,255,255,0.5)" stroke-width="1"/>
+            <line x1="38" y1="30" x2="55" y2="30" stroke="rgba(255,255,255,0.5)" stroke-width="1"/>
+            <circle cx="30" cy="30" r="12" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="1"/>
+        </svg>
+    </div>
+
+    <!-- ==================== Application Scripts (load order matters) ==================== -->
+    <script src="js/config.js"></script>
+    <script src="js/utils.js"></script>
+    <script src="js/state.js"></script>
+    <script src="js/cesium-init.js"></script>
+    <script src="js/indicators.js"></script>
+    <script src="js/camera.js"></script>
+    <script src="js/telemetry.js"></script>
+    <script src="js/charts.js"></script>
+    <script src="js/controls.js"></script>
+    <script src="js/websocket.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

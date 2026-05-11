@@ -1,0 +1,820 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Satellite Control Visualization</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cesium/1.107.0/Cesium.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cesium/1.107.0/Widgets/widgets.css">
+    <style>
+        html, body, #cesiumContainer {
+            width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden;
+        }
+        .status-panel {
+            position: absolute; top: 10px; right: 10px; 
+            background-color: rgba(40, 40, 40, 0.7); color: white;
+            padding: 10px; border-radius: 5px; font-family: Arial, sans-serif;
+            font-size: 12px; max-width: 300px; z-index: 1000;
+            max-height: 80vh; overflow-y: auto;
+        }
+        .connection-indicator {
+            display: inline-block; width: 12px; height: 12px;
+            border-radius: 50%; margin-right: 5px; background-color: #f00;
+        }
+        .connected { background-color: #0f0; }
+        .controls-info {
+            position: absolute; bottom: 10px; left: 10px;
+            background-color: rgba(40, 40, 40, 0.7); color: white;
+            padding: 10px; border-radius: 5px; font-family: Arial, sans-serif;
+            font-size: 12px; max-width: 300px; z-index: 1000;
+        }
+        .legend {
+            position: absolute; bottom: 10px; right: 10px;
+            background-color: rgba(40, 40, 40, 0.7); color: white;
+            padding: 10px; border-radius: 5px; font-family: Arial, sans-serif;
+            font-size: 12px; max-width: 300px; z-index: 1000;
+        }
+        .legend-item {
+            display: flex; align-items: center; margin-bottom: 5px;
+        }
+        .legend-color {
+            display: inline-block; width: 15px; height: 3px;
+            margin-right: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div id="cesiumContainer"></div>
+    
+    <div class="status-panel">
+        <div><span class="connection-indicator" id="connectionStatus"></span>
+            <span id="connectionText">Disconnected</span>
+        </div>
+        <div id="telemetryData">No telemetry data</div>
+    </div>
+    
+    <div class="controls-info">
+        <h3>Keyboard Controls:</h3>
+        <div>W/S - Pitch up/down</div>
+        <div>A/D - Yaw left/right</div>
+        <div>Q/E - Roll left/right</div>
+        <div>Space - Stop rotation</div>
+        <h3>Camera Modes:</h3>
+        <div>1 - External tracking view</div>
+        <div>2 - Satellite view (2° FOV)</div>
+        <div>3 - Satellite view (15° FOV)</div>
+        <div>Current mode: <span id="cameraMode">Tracking</span></div>
+    </div>
+
+    <div class="legend">
+        <h3>Direction Indicators:</h3>
+        <div class="legend-item">
+            <div class="legend-color" style="background-color: cyan; height: 3px;"></div>
+            <div>Orbital Velocity</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background-color: orange; height: 3px;"></div>
+            <div>Nadir (Earth Center)</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background-color: lime; height: 3px;"></div>
+            <div>North Direction</div>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background-color: red; height: 3px;"></div>
+            <div>South Direction</div>
+        </div>
+    </div>
+    
+    <script>
+    // Global variables
+    let viewer, satellite, orbitEntity;
+    let xAxis, yAxis, zAxis;
+    let angularVelocityVector; // Added for angular velocity visualization
+    let orbitPoints = [];
+    let currentCameraMode = 0;
+    let isAutoTracking = true;
+    
+    // New direction indicators
+    let orbitalVelocityVector;
+    let nadirVector;
+    let northVector;
+    let southVector;
+    let lastPosition; // To calculate velocity direction
+    
+    // WebSocket variables
+    let socket;
+    let isConnected = false;
+    
+    // For data conversion
+    function formatNumber(value, decimals = 2) {
+        if (value === undefined || value === null || isNaN(value)) return 'N/A';
+        return Number(value).toFixed(decimals);
+    }
+    
+    function radToDeg(rad) {
+        return rad * (180 / Math.PI);
+    }
+    
+    // Convert ECEF to Lat/Long/Alt
+    function ecefToLla(x, y, z) {
+        const cartesian = new Cesium.Cartesian3(x, y, z);
+        const cartographic = Cesium.Cartographic.fromCartesian(cartesian);
+        
+        return {
+            longitude: Cesium.Math.toDegrees(cartographic.longitude),
+            latitude: Cesium.Math.toDegrees(cartographic.latitude),
+            altitude: cartographic.height
+        };
+    }
+    
+    // Initialize Cesium
+    function initCesium() {
+        Cesium.Ion.defaultAccessToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI2OWU1MTE5Ni1iNjc3LTRhOGMtYjUzNy0wOTYyMjg2ZjRiNjQiLCJpZCI6Mjk0MTAxLCJpYXQiOjE3NDQ2NzgwMzN9.Es400ydfnCqdySgDnXF72GfTjQqXLDa22ZhN1peSsaQ';
+        
+        viewer = new Cesium.Viewer('cesiumContainer', {
+            terrainProvider: new Cesium.EllipsoidTerrainProvider(),
+            infoBox: false, selectionIndicator: false, shadows: false, shouldAnimate: true
+        });
+        
+        // Create a default position
+        const position = new Cesium.Cartesian3(0, 0, 6378137 * 1.1);
+        
+        // Create satellite
+        satellite = viewer.entities.add({
+            name: 'Satellite',
+            position: position,
+            model: {
+                uri: undefined,
+                minimumPixelSize: 50,
+                maximumScale: 20000
+            },
+            box: {
+                dimensions: new Cesium.Cartesian3(2000, 2000, 2000),
+                material: Cesium.Color.WHITE.withAlpha(0.7),
+                outline: true,
+                outlineColor: Cesium.Color.BLACK
+            },
+            viewFrom: new Cesium.Cartesian3(0, 0, 10000) // Default view offset
+        });
+        
+        // Create axes
+        const axisSize = 3000;
+        const axisWidth = 200;
+        
+        xAxis = viewer.entities.add({
+            name: 'X-Axis',
+            position: position,
+            box: {
+                dimensions: new Cesium.Cartesian3(axisSize, axisWidth, axisWidth),
+                material: Cesium.Color.RED.withAlpha(0.8)
+            }
+        });
+        
+        yAxis = viewer.entities.add({
+            name: 'Y-Axis',
+            position: position,
+            box: {
+                dimensions: new Cesium.Cartesian3(axisWidth, axisSize, axisWidth),
+                material: Cesium.Color.GREEN.withAlpha(0.8)
+            }
+        });
+        
+        zAxis = viewer.entities.add({
+            name: 'Z-Axis',
+            position: position,
+            box: {
+                dimensions: new Cesium.Cartesian3(axisWidth, axisWidth, axisSize),
+                material: Cesium.Color.BLUE.withAlpha(0.8)
+            }
+        });
+        
+        // Create angular velocity vector (initially set to zero length)
+        angularVelocityVector = viewer.entities.add({
+            name: 'Angular Velocity',
+            position: position,
+            polyline: {
+                positions: [position, position], // Start with same position (zero length)
+                width: 5,
+                material: new Cesium.PolylineGlowMaterialProperty({
+                    glowPower: 0.25,
+                    color: Cesium.Color.MAGENTA.withAlpha(0.9)
+                })
+            }
+        });
+        
+        // Create orbital velocity direction indicator (cyan)
+        orbitalVelocityVector = viewer.entities.add({
+            name: 'Orbital Velocity',
+            position: position,
+            polyline: {
+                positions: [position, position],
+                width: 3,
+                material: new Cesium.PolylineGlowMaterialProperty({
+                    glowPower: 0.25,
+                    color: Cesium.Color.CYAN.withAlpha(0.9)
+                })
+            },
+            label: {
+                text: 'Velocity',
+                font: '12px sans-serif',
+                fillColor: Cesium.Color.CYAN,
+                pixelOffset: new Cesium.Cartesian2(12, 0),
+                showBackground: true,
+                backgroundColor: Cesium.Color.BLACK.withAlpha(0.6)
+            }
+        });
+        
+        // Create nadir direction indicator (orange)
+        nadirVector = viewer.entities.add({
+            name: 'Nadir',
+            position: position,
+            polyline: {
+                positions: [position, position],
+                width: 3,
+                material: new Cesium.PolylineGlowMaterialProperty({
+                    glowPower: 0.25,
+                    color: Cesium.Color.ORANGE.withAlpha(0.9)
+                })
+            },
+            label: {
+                text: 'Nadir',
+                font: '12px sans-serif',
+                fillColor: Cesium.Color.ORANGE,
+                pixelOffset: new Cesium.Cartesian2(12, 0),
+                showBackground: true,
+                backgroundColor: Cesium.Color.BLACK.withAlpha(0.6)
+            }
+        });
+        
+        // Create north direction indicator (green)
+        northVector = viewer.entities.add({
+            name: 'North',
+            position: position,
+            polyline: {
+                positions: [position, position],
+                width: 3,
+                material: new Cesium.PolylineGlowMaterialProperty({
+                    glowPower: 0.25,
+                    color: Cesium.Color.LIME.withAlpha(0.9)
+                })
+            },
+            label: {
+                text: 'North',
+                font: '12px sans-serif',
+                fillColor: Cesium.Color.LIME,
+                pixelOffset: new Cesium.Cartesian2(12, 0),
+                showBackground: true,
+                backgroundColor: Cesium.Color.BLACK.withAlpha(0.6)
+            }
+        });
+        
+        // Create south direction indicator (red)
+        southVector = viewer.entities.add({
+            name: 'South',
+            position: position,
+            polyline: {
+                positions: [position, position],
+                width: 3,
+                material: new Cesium.PolylineGlowMaterialProperty({
+                    glowPower: 0.25,
+                    color: Cesium.Color.RED.withAlpha(0.9)
+                })
+            },
+            label: {
+                text: 'South',
+                font: '12px sans-serif',
+                fillColor: Cesium.Color.RED,
+                pixelOffset: new Cesium.Cartesian2(12, 0),
+                showBackground: true,
+                backgroundColor: Cesium.Color.BLACK.withAlpha(0.6)
+            }
+        });
+        
+        // Set up auto-tracking for camera mode 0
+        viewer.trackedEntity = satellite;
+        
+        // Zoom to satellite
+        viewer.zoomTo(satellite);
+        console.log("Cesium initialized");
+        
+        // Set initial position
+        lastPosition = position;
+    }
+    
+    // Connect to WebSocket
+    function connectWebSocket() {
+        socket = new WebSocket("ws://localhost:8765");
+        
+        socket.onopen = function() {
+            console.log("WebSocket connected");
+            isConnected = true;
+            document.getElementById('connectionStatus').classList.add('connected');
+            document.getElementById('connectionText').textContent = 'Connected';
+        };
+        
+        socket.onmessage = function(event) {
+            try {
+                const data = JSON.parse(event.data);
+                updateSatellite(data);
+                updateTelemetryDisplay(data);
+            } catch (e) {
+                console.error("Error processing telemetry:", e);
+            }
+        };
+        
+        socket.onclose = function() {
+            console.log("WebSocket disconnected");
+            isConnected = false;
+            document.getElementById('connectionStatus').classList.remove('connected');
+            document.getElementById('connectionText').textContent = 'Disconnected';
+            setTimeout(connectWebSocket, 3000);
+        };
+        
+        socket.onerror = function(error) {
+            console.error("WebSocket error:", error);
+        };
+    }
+    
+    // Update satellite position and orientation
+    function updateSatellite(data) {
+        if (!data.position_ecef || !data.quaternion) return;
+        
+        try {
+            const position = new Cesium.Cartesian3(
+                data.position_ecef[0],
+                data.position_ecef[1],
+                data.position_ecef[2]
+            );
+            
+            const orientation = new Cesium.Quaternion(
+                data.quaternion[0],
+                data.quaternion[1],
+                data.quaternion[2],
+                data.quaternion[3]
+            );
+            
+            // Get satellite position
+            satellite.position = position;
+            satellite.orientation = orientation;
+            
+            // Update axes
+            updateAxes(position, orientation);
+            
+            // Update orbit
+            updateOrbit(position);
+            
+            // Update angular velocity vector if data is available
+            if (data.angularVelocity) {
+                updateAngularVelocityVector(position, orientation, data.angularVelocity);
+            }
+            
+            // Update direction indicators
+            updateDirectionIndicators(position);
+            
+            // Update last position for velocity calculation
+            lastPosition = position;
+            
+            // Update camera if in satellite view mode
+            if (currentCameraMode !== 0) {
+                updateSatelliteCamera(position, orientation);
+            }
+        } catch (e) {
+            console.error("Error updating satellite:", e);
+        }
+    }
+    
+    // Update direction indicators for camera modes 2 and 3
+    function updateDirectionIndicators(position) {
+        try {
+            const vectorLength = 8000; // Length of indicator vectors
+            
+            // 1. Orbital velocity vector (tangent to orbit)
+            if (lastPosition) {
+                const velocity = new Cesium.Cartesian3();
+                Cesium.Cartesian3.subtract(position, lastPosition, velocity);
+                
+                // Only proceed if there's significant movement
+                if (Cesium.Cartesian3.magnitude(velocity) > 0.1) {
+                    const normalizedVelocity = new Cesium.Cartesian3();
+                    Cesium.Cartesian3.normalize(velocity, normalizedVelocity);
+                    
+                    const velocityEndPoint = new Cesium.Cartesian3();
+                    Cesium.Cartesian3.multiplyByScalar(normalizedVelocity, vectorLength, velocityEndPoint);
+                    Cesium.Cartesian3.add(position, velocityEndPoint, velocityEndPoint);
+                    
+                    orbitalVelocityVector.position = position;
+                    orbitalVelocityVector.polyline.positions = [position, velocityEndPoint];
+                    
+                    // Position the label at the end of the vector
+                    orbitalVelocityVector.label.position = velocityEndPoint;
+                }
+            }
+            
+            // 2. Nadir vector (towards Earth's center)
+            const nadir = new Cesium.Cartesian3();
+            Cesium.Cartesian3.negate(position, nadir);
+            Cesium.Cartesian3.normalize(nadir, nadir);
+            
+            const nadirEndPoint = new Cesium.Cartesian3();
+            Cesium.Cartesian3.multiplyByScalar(nadir, vectorLength, nadirEndPoint);
+            Cesium.Cartesian3.add(position, nadirEndPoint, nadirEndPoint);
+            
+            nadirVector.position = position;
+            nadirVector.polyline.positions = [position, nadirEndPoint];
+            nadirVector.label.position = nadirEndPoint;
+            
+            // 3. North and South vectors
+            // First, get the geocentric normal to find the local north
+            const normal = new Cesium.Cartesian3();
+            Cesium.Cartesian3.normalize(position, normal);
+            
+            // Get the east direction (cross product of normal and world up)
+            const worldUp = new Cesium.Cartesian3(0, 0, 1); // Z-axis in ECEF is approximately north pole
+            const east = new Cesium.Cartesian3();
+            Cesium.Cartesian3.cross(normal, worldUp, east);
+            Cesium.Cartesian3.normalize(east, east);
+            
+            // Get north direction (cross product of east and normal)
+            const north = new Cesium.Cartesian3();
+            Cesium.Cartesian3.cross(east, normal, north);
+            Cesium.Cartesian3.normalize(north, north);
+            
+            // South is opposite of north
+            const south = new Cesium.Cartesian3();
+            Cesium.Cartesian3.negate(north, south);
+            
+            // Create north end point
+            const northEndPoint = new Cesium.Cartesian3();
+            Cesium.Cartesian3.multiplyByScalar(north, vectorLength, northEndPoint);
+            Cesium.Cartesian3.add(position, northEndPoint, northEndPoint);
+            
+            // Create south end point
+            const southEndPoint = new Cesium.Cartesian3();
+            Cesium.Cartesian3.multiplyByScalar(south, vectorLength, southEndPoint);
+            Cesium.Cartesian3.add(position, southEndPoint, southEndPoint);
+            
+            // Update north vector
+            northVector.position = position;
+            northVector.polyline.positions = [position, northEndPoint];
+            northVector.label.position = northEndPoint;
+            
+            // Update south vector
+            southVector.position = position;
+            southVector.polyline.positions = [position, southEndPoint];
+            southVector.label.position = southEndPoint;
+            
+            // Show direction indicators only in satellite view modes
+            const showIndicators = currentCameraMode > 0;
+            orbitalVelocityVector.polyline.show = showIndicators;
+            orbitalVelocityVector.label.show = showIndicators;
+            nadirVector.polyline.show = showIndicators;
+            nadirVector.label.show = showIndicators;
+            northVector.polyline.show = showIndicators;
+            northVector.label.show = showIndicators;
+            southVector.polyline.show = showIndicators;
+            southVector.label.show = showIndicators;
+            
+        } catch (e) {
+            console.error("Error updating direction indicators:", e);
+        }
+    }
+    
+    // Update angular velocity vector
+    function updateAngularVelocityVector(position, orientation, angularVelocity) {
+        try {
+            // Create rotation matrix from quaternion (to transform from body to world frame)
+            const rotationMatrix = new Cesium.Matrix3();
+            Cesium.Matrix3.fromQuaternion(orientation, rotationMatrix);
+            
+            // Create angular velocity vector in body frame
+            const angVelBody = new Cesium.Cartesian3(
+                angularVelocity[0],
+                angularVelocity[1],
+                angularVelocity[2]
+            );
+            
+            // Normalize angular velocity to get direction only
+            const angVelMagnitude = Cesium.Cartesian3.magnitude(angVelBody);
+            
+            // Only proceed if there is actual rotation
+            if (angVelMagnitude > 0.0001) {
+                // Create a unit vector in the direction of angular velocity
+                const angVelUnit = new Cesium.Cartesian3();
+                Cesium.Cartesian3.normalize(angVelBody, angVelUnit);
+                
+                // Scale to a visible length (5000 meters)
+                const vectorLength = 5000; 
+                const scaledAngVel = new Cesium.Cartesian3();
+                Cesium.Cartesian3.multiplyByScalar(angVelUnit, vectorLength, scaledAngVel);
+                
+                // Transform the vector from body frame to world frame
+                const angVelWorld = new Cesium.Cartesian3();
+                Cesium.Matrix3.multiplyByVector(rotationMatrix, scaledAngVel, angVelWorld);
+                
+                // Calculate end position of the vector
+                const endPosition = new Cesium.Cartesian3();
+                Cesium.Cartesian3.add(position, angVelWorld, endPosition);
+                
+                // Update the vector visualization
+                angularVelocityVector.polyline.positions = [position, endPosition];
+                
+                // Scale width based on angular velocity magnitude (within reason)
+                const normalizedWidth = Math.min(Math.max(angVelMagnitude * 2, 3), 15);
+                angularVelocityVector.polyline.width = normalizedWidth;
+            } else {
+                // If angular velocity is too small, make the vector invisible by setting
+                // start and end points to the same location
+                angularVelocityVector.polyline.positions = [position, position];
+            }
+        } catch (e) {
+            console.error("Error updating angular velocity vector:", e);
+        }
+    }
+    
+    // Update coordinate axes
+    function updateAxes(position, orientation) {
+        const matrix = new Cesium.Matrix3();
+        Cesium.Matrix3.fromQuaternion(orientation, matrix);
+        
+        const xDir = new Cesium.Cartesian3();
+        const yDir = new Cesium.Cartesian3();
+        const zDir = new Cesium.Cartesian3();
+        
+        Cesium.Matrix3.getColumn(matrix, 0, xDir);
+        Cesium.Matrix3.getColumn(matrix, 1, yDir);
+        Cesium.Matrix3.getColumn(matrix, 2, zDir);
+        
+        const offset = 1500;
+        
+        // X-axis position (red)
+        const xPos = new Cesium.Cartesian3();
+        Cesium.Cartesian3.multiplyByScalar(xDir, offset, xPos);
+        Cesium.Cartesian3.add(position, xPos, xPos);
+        xAxis.position = xPos;
+        xAxis.orientation = orientation;
+        
+        // Y-axis position (green)
+        const yPos = new Cesium.Cartesian3();
+        Cesium.Cartesian3.multiplyByScalar(yDir, offset, yPos);
+        Cesium.Cartesian3.add(position, yPos, yPos);
+        yAxis.position = yPos;
+        yAxis.orientation = orientation;
+        
+        // Z-axis position (blue)
+        const zPos = new Cesium.Cartesian3();
+        Cesium.Cartesian3.multiplyByScalar(zDir, offset, zPos);
+        Cesium.Cartesian3.add(position, zPos, zPos);
+        zAxis.position = zPos;
+        zAxis.orientation = orientation;
+    }
+    
+    // Update orbit path
+    function updateOrbit(position) {
+        orbitPoints.push(Cesium.Cartesian3.clone(position));
+        
+        if (orbitPoints.length > 300) {
+            orbitPoints.shift();
+        }
+        
+        if (orbitEntity) {
+            viewer.entities.remove(orbitEntity);
+        }
+        
+        if (orbitPoints.length >= 2) {
+            orbitEntity = viewer.entities.add({
+                polyline: {
+                    positions: orbitPoints,
+                    width: 2,
+                    material: Cesium.Color.YELLOW
+                }
+            });
+        }
+    }
+    
+    // Update camera for satellite view modes
+    function updateSatelliteCamera(position, orientation) {
+        const matrix = new Cesium.Matrix3();
+        Cesium.Matrix3.fromQuaternion(orientation, matrix);
+        
+        const zDir = new Cesium.Cartesian3();
+        const yDir = new Cesium.Cartesian3();
+        Cesium.Matrix3.getColumn(matrix, 2, zDir);
+        Cesium.Matrix3.getColumn(matrix, 1, yDir);
+        
+        // Set appropriate offset behind satellite's +Z axis
+        // Use a smaller offset for better view
+        const offsetDistance = -10; // 5000 meters ahead
+        const offset = new Cesium.Cartesian3();
+        Cesium.Cartesian3.multiplyByScalar(zDir, offsetDistance, offset);
+        
+        // Camera position
+        const cameraPos = new Cesium.Cartesian3();
+        Cesium.Cartesian3.add(position, offset, cameraPos);
+        
+        // Create a rotation quaternion for -90 degrees around Z axis
+    const rotationAngle = Cesium.Math.toRadians(-90);
+    const rotationQuat = Cesium.Quaternion.fromAxisAngle(zDir, rotationAngle);
+    
+    // Rotate the camera up vector (normally yDir)
+    const rotatedUp = new Cesium.Cartesian3();
+    Cesium.Matrix3.fromQuaternion(rotationQuat, matrix);
+    Cesium.Matrix3.multiplyByVector(matrix, yDir, rotatedUp);
+    
+    // Set camera with rotated orientation
+    viewer.camera.position = cameraPos;
+    viewer.camera.direction = zDir;
+    viewer.camera.up = rotatedUp;
+
+          
+        // Set FOV based on mode
+        const fov = currentCameraMode === 1 ? 2.0 : 20.0;
+        viewer.camera.frustum.fov = Cesium.Math.toRadians(fov);
+    }
+    
+    // Switch camera mode
+    function switchCameraMode(mode) {
+        currentCameraMode = mode;
+        const modeText = document.getElementById('cameraMode');
+        
+        if (mode === 0) {
+            // Switch to tracking mode
+            viewer.camera.frustum.fov = Cesium.Math.toRadians(60.0);
+            viewer.trackedEntity = satellite; // Enable automatic tracking
+            modeText.textContent = "Tracking";
+            
+            // Hide direction indicators in tracking mode
+            orbitalVelocityVector.polyline.show = false;
+            orbitalVelocityVector.label.show = false;
+            nadirVector.polyline.show = false;
+            nadirVector.label.show = false;
+            northVector.polyline.show = false;
+            northVector.label.show = false;
+            southVector.polyline.show = false;
+            southVector.label.show = false;
+            
+            // Show satellite and body-fixed axes in tracking mode
+            satellite.box.show = true;
+            xAxis.box.show = true;
+            yAxis.box.show = true;
+            zAxis.box.show = true;
+        } else {
+            // Switch to satellite view
+            viewer.trackedEntity = undefined; // Disable automatic tracking
+            modeText.textContent = mode === 1 ? "Satellite View (2° FOV)" : "Satellite View (15° FOV)";
+            
+            // Show direction indicators in satellite view modes
+            orbitalVelocityVector.polyline.show = true;
+            orbitalVelocityVector.label.show = true;
+            nadirVector.polyline.show = true;
+            nadirVector.label.show = true;
+            northVector.polyline.show = true;
+            northVector.label.show = true;
+            southVector.polyline.show = true;
+            southVector.label.show = true;
+            
+            // Hide satellite and body-fixed axes in satellite view modes
+            satellite.box.show = false;
+            xAxis.box.show = false;
+            yAxis.box.show = false;
+            zAxis.box.show = false;
+            
+            // If satellite is positioned, immediately update camera
+            if (satellite.position) {
+                const position = satellite.position.getValue(Cesium.JulianDate.now());
+                const orientation = satellite.orientation.getValue(Cesium.JulianDate.now());
+                if (position && orientation) {
+                    updateSatelliteCamera(position, orientation);
+                    updateDirectionIndicators(position);
+                }
+            }
+        }
+    }
+    
+    // Update telemetry display
+    function updateTelemetryDisplay(data) {
+        try {
+            let html = `
+                <div><strong>Time:</strong> ${formatNumber(data.time, 1)} s</div>
+                <div><strong>Date:</strong> ${data.simDate || 'N/A'}</div>
+            `;
+            
+            // Add position
+            if (data.position_ecef) {
+                try {
+                    const lla = ecefToLla(
+                        data.position_ecef[0],
+                        data.position_ecef[1],
+                        data.position_ecef[2]
+                    );
+                    
+                    html += `
+                        <div><strong>Position:</strong></div>
+                        <div>Longitude: ${formatNumber(lla.longitude, 4)}°</div>
+                        <div>Latitude: ${formatNumber(lla.latitude, 4)}°</div>
+                        <div>Altitude: ${formatNumber(lla.altitude / 1000, 2)} km</div>
+                    `;
+                } catch (e) {
+                    html += `
+                        <div><strong>Position (ECEF):</strong></div>
+                        <div>X: ${formatNumber(data.position_ecef[0], 0)} m</div>
+                        <div>Y: ${formatNumber(data.position_ecef[1], 0)} m</div>
+                        <div>Z: ${formatNumber(data.position_ecef[2], 0)} m</div>
+                    `;
+                }
+            }
+            
+            // Add quaternion
+            if (data.quaternion) {
+                html += `
+                    <div><strong>Quaternion:</strong></div>
+                    <div>X: ${formatNumber(data.quaternion[0], 4)}</div>
+                    <div>Y: ${formatNumber(data.quaternion[1], 4)}</div>
+                    <div>Z: ${formatNumber(data.quaternion[2], 4)}</div>
+                    <div>W: ${formatNumber(data.quaternion[3], 4)}</div>
+                `;
+            }
+            
+            // Add angular velocity
+            if (data.angularVelocity) {
+                // Calculate magnitude of angular velocity
+                const wx = data.angularVelocity[0];
+                const wy = data.angularVelocity[1];
+                const wz = data.angularVelocity[2];
+                const magnitude = Math.sqrt(wx*wx + wy*wy + wz*wz);
+                
+                html += `
+                    <div><strong>Angular Velocity (deg/s):</strong></div>
+                    <div>Roll (X): ${formatNumber(radToDeg(data.angularVelocity[0]), 2)}</div>
+                    <div>Pitch (Y): ${formatNumber(radToDeg(data.angularVelocity[1]), 2)}</div>
+                    <div>Yaw (Z): ${formatNumber(radToDeg(data.angularVelocity[2]), 2)}</div>
+                    <div>Magnitude: ${formatNumber(radToDeg(magnitude), 2)}</div>
+                `;
+            }
+            
+            // Add target rates
+            if (data.targetRates) {
+                html += `
+                    <div><strong>Target Rates (deg/s):</strong></div>
+                    <div>Roll (X): ${formatNumber(data.targetRates[0], 2)}</div>
+                    <div>Pitch (Y): ${formatNumber(data.targetRates[1], 2)}</div>
+                    <div>Yaw (Z): ${formatNumber(data.targetRates[2], 2)}</div>
+                `;
+            }
+            
+            document.getElementById('telemetryData').innerHTML = html;
+        } catch (e) {
+            console.error("Error updating display:", e);
+        }
+    }
+    
+    // Set up keyboard controls
+    function setupKeyboardControls() {
+        document.addEventListener('keydown', function(event) {
+            // Handle camera switching
+            if (event.code === 'Digit1' || event.code === 'Numpad1') {
+                switchCameraMode(0);
+                return;
+            } else if (event.code === 'Digit2' || event.code === 'Numpad2') {
+                switchCameraMode(1);
+                return;
+            } else if (event.code === 'Digit3' || event.code === 'Numpad3') {
+                switchCameraMode(2);
+                return;
+            }
+            
+            // Handle satellite controls
+            if (!isConnected) return;
+            
+            let command = '';
+            
+            switch (event.code) {
+                case 'KeyW': command = 'increase_pitch'; break;
+                case 'KeyS': command = 'decrease_pitch'; break;
+                case 'KeyA': command = 'yaw_left'; break;
+                case 'KeyD': command = 'yaw_right'; break;
+                case 'KeyQ': command = 'increase_roll'; break;
+                case 'KeyE': command = 'decrease_roll'; break;
+                case 'Space': command = 'stop_rotation'; break;
+            }
+            
+            if (command) {
+                socket.send(JSON.stringify({ command: command }));
+                console.log('Sent command:', command);
+            }
+        });
+    }
+    
+    // Initialize application
+    function initialize() {
+        initCesium();
+        setupKeyboardControls();
+        connectWebSocket();
+        console.log("Application initialized");
+    }
+    
+    // Start application
+    document.addEventListener('DOMContentLoaded', initialize);
+    </script>
+</body>
+</html>

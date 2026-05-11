@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>Trajectory Check - Aircraft GLB on Globe</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cesium/1.107.0/Cesium.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cesium/1.107.0/Widgets/widgets.css">
+  <style>
+    html, body, #cesiumContainer {
+      width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden;
+      background: #000;
+      font-family: 'Segoe UI', 'Roboto', Arial, sans-serif;
+    }
+    /* Top-left legend */
+    #legend {
+      position: absolute; top: 10px; left: 10px; z-index: 1000;
+      background: rgba(20, 20, 25, 0.85); color: #e2e8f0;
+      padding: 10px 14px; border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      font-size: 12px; max-width: 360px;
+      backdrop-filter: blur(6px);
+    }
+    #legend h3 {
+      margin: 0 0 8px 0; font-size: 13px; color: #f8fafc;
+      letter-spacing: 1px; text-transform: uppercase; font-weight: 700;
+    }
+    .legend-row {
+      display: flex; align-items: center; margin-bottom: 4px;
+      font-family: 'Consolas', 'Monaco', monospace;
+    }
+    .legend-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      margin-right: 8px; flex-shrink: 0;
+      border: 1px solid rgba(255, 255, 255, 0.3);
+    }
+    .legend-text { color: #cbd5e1; font-size: 11px; }
+    /* Bottom-left status (sits above the timeline) */
+    #status {
+      position: absolute; bottom: 40px; left: 10px; z-index: 1000;
+      background: rgba(20, 20, 25, 0.85); color: #94a3b8;
+      padding: 6px 10px; border-radius: 4px;
+      font-size: 11px; font-family: 'Consolas', 'Monaco', monospace;
+    }
+  </style>
+</head>
+<body>
+  <div id="cesiumContainer"></div>
+  <div id="legend">
+    <h3>✈ Trajectory Check</h3>
+    <div id="legendRows"></div>
+  </div>
+  <div id="status">Loading…</div>
+
+  <script>
+    // ============================================================
+    // CONFIG  (모든 조정은 이 블록에서)
+    // ============================================================
+    const FT_TO_M           = 0.3048;
+    const CLOCK_MULTIPLIER  = 200;     // 재생 속도 배수 (필요시 변경)
+    const PATH_WIDTH        = 1.5;     // 궤적 polyline 두께
+    const MODEL_MIN_PIXEL   = 64;      // 멀리서도 모델이 보이게
+    const MODEL_MAX_SCALE   = 5000;    // 가까이 가도 너무 커지지 않게
+
+    // ▶ 모든 항공기를 동시에 출발시킬지 여부
+    //   true  : 각 trace의 첫 샘플을 t=0으로 맞춰 6대가 같이 시작
+    //   false : 원본 timestamp 그대로 (실제 시각, 24h 분산)
+    const NORMALIZE_START_TIMES = true;
+    const REFERENCE_EPOCH_SEC   = 1735689600; // 2025-01-01 00:00:00 UTC (정규화 시 공통 기준)
+
+    // JSON ↔ GLB 매핑 (편집은 여기 한 곳에서)
+    const AIRCRAFTS = [
+      { json: '../targets_csv/888171.json', glb: '../glb/Aircrafts/A340-600_OBJ.glb',         scale: 1.0, color: '#ef4444' }, // red
+      { json: '../targets_csv/71bf71.json', glb: '../glb/Aircrafts/11805_airplane_v2_L2.glb', scale: 1.0, color: '#f97316' }, // orange
+      { json: '../targets_csv/71c071.json', glb: '../glb/Aircrafts/air1.glb',                 scale: 1.0, color: '#eab308' }, // yellow
+      { json: '../targets_csv/781171.json', glb: '../glb/Aircrafts/Kawasaki_LD.glb',          scale: 1.0, color: '#22c55e' }, // green
+      { json: '../targets_csv/885171.json', glb: '../glb/Aircrafts/ORCA_4.5GEN_JET.glb',      scale: 1.0, color: '#06b6d4' }, // cyan
+      { json: '../targets_csv/500371.json', glb: '../glb/Aircrafts/mxcrvu9hq58g-tu134.glb',   scale: 1.0, color: '#a855f7' }, // purple
+    ];
+
+    // ============================================================
+    // CESIUM VIEWER
+    // ============================================================
+    // 원본 cesium_improved-code73_baseline_Jeju_F4.html 에서 쓰던 Ion 토큰
+    // → Cesium 기본 베이스맵(Bing Maps Aerial with Labels) 사용 가능
+    Cesium.Ion.defaultAccessToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI2OWU1MTE5Ni1iNjc3LTRhOGMtYjUzNy0wOTYyMjg2ZjRiNjQiLCJpZCI6Mjk0MTAxLCJpYXQiOjE3NDQ2NzgwMzN9.Es400ydfnCqdySgDnXF72GfTjQqXLDa22ZhN1peSsaQ';
+
+    // 백업용 imagery (Ion 안 될 때 'M' 키로 토글)
+    const arcgisImagery = new Cesium.UrlTemplateImageryProvider({
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      maximumLevel: 19,
+      credit: 'Tiles © Esri'
+    });
+    const osmImagery = new Cesium.OpenStreetMapImageryProvider({
+      url: 'https://tile.openstreetmap.org/',
+      credit: '© OpenStreetMap contributors'
+    });
+
+    const viewer = new Cesium.Viewer('cesiumContainer', {
+      // imageryProvider 미지정 → Cesium 기본 (Ion → Bing Maps Aerial with Labels)
+      terrainProvider: new Cesium.EllipsoidTerrainProvider(), // 원본과 동일하게 평탄 지형
+      animation: true,                  // 좌하단 재생 컨트롤
+      timeline: true,                   // 하단 타임라인 스크럽
+      baseLayerPicker: true,            // Ion 옵션 가능 (토큰 있으니 선택지 정상)
+      geocoder: false,
+      homeButton: true,
+      sceneModePicker: false,
+      navigationHelpButton: false,
+      fullscreenButton: true,
+      infoBox: true,
+      selectionIndicator: true,
+    });
+
+    // Bing 막힐 때 'M' 키로 ArcGIS ↔ OSM 토글 (디버그용)
+    let imageryMode = 0; // 0=default(Bing), 1=ArcGIS, 2=OSM
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'm' && e.key !== 'M') return;
+      imageryMode = (imageryMode + 1) % 3;
+      viewer.imageryLayers.removeAll();
+      if (imageryMode === 0) {
+        viewer.imageryLayers.addImageryProvider(
+          new Cesium.IonImageryProvider({ assetId: 3 })  // Bing Aerial with Labels
+        );
+        console.log('[imagery] Bing Maps Aerial with Labels (Ion)');
+      } else if (imageryMode === 1) {
+        viewer.imageryLayers.addImageryProvider(arcgisImagery);
+        console.log('[imagery] ArcGIS World Imagery');
+      } else {
+        viewer.imageryLayers.addImageryProvider(osmImagery);
+        console.log('[imagery] OpenStreetMap');
+      }
+    });
+
+    // 검증용이라 day/night lighting은 끔 (낮·밤 음영으로 모델이 안 보이는 것 방지)
+    viewer.scene.globe.enableLighting = false;
+    viewer.scene.skyAtmosphere.show   = true;
+
+    // 한반도 부근 초기 시점
+    viewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(127.5, 35.5, 1_500_000),
+      duration: 0
+    });
+
+    // ============================================================
+    // 단일 항공기 로드 함수
+    // ============================================================
+    async function loadAircraft(cfg) {
+      const resp = await fetch(cfg.json);
+      if (!resp.ok) throw new Error(`Failed to fetch ${cfg.json}: ${resp.status}`);
+      const data = await resp.json();
+
+      const baseTs = data.timestamp;          // unix epoch seconds (e.g., 1735689600)
+      const trace  = data.trace || [];
+
+      const positionProperty = new Cesium.SampledPositionProperty();
+      let firstTime = null, lastTime = null;
+      let firstValidOffset = null;   // 정규화 기준점 (각 항공기의 첫 유효 t_offset)
+      let added = 0;
+
+      for (const row of trace) {
+        // row = [t_offset_sec, lat, lon, alt_ft, speed_kt, heading_deg, ...]
+        const tOff  = row[0];
+        const lat   = row[1];
+        const lon   = row[2];
+        const altFt = row[3];
+
+        // 유효성 체크 — null / 비숫자 row는 스킵
+        if (tOff == null || lat == null || lon == null) continue;
+        if (typeof lat !== 'number' || typeof lon !== 'number') continue;
+
+        // ADS-B는 지상 주행 시 alt가 "ground" 문자열이거나 null일 수 있음 → 0 처리
+        const altM = (typeof altFt === 'number') ? altFt * FT_TO_M : 0;
+
+        // 첫 유효 샘플의 offset을 기준으로 정규화 여부 결정
+        if (firstValidOffset === null) firstValidOffset = tOff;
+
+        const tEpoch = NORMALIZE_START_TIMES
+          ? (REFERENCE_EPOCH_SEC + (tOff - firstValidOffset))   // 모두 t=0에서 출발
+          : (baseTs + tOff);                                    // 원본 절대시각
+
+        const jd  = Cesium.JulianDate.fromDate(new Date(tEpoch * 1000));
+        const pos = Cesium.Cartesian3.fromDegrees(lon, lat, altM);
+
+        positionProperty.addSample(jd, pos);
+
+        if (firstTime === null) firstTime = jd;
+        lastTime = jd;
+        added++;
+      }
+
+      if (added < 2) {
+        console.warn(`[skip] ${cfg.json}: only ${added} valid samples`);
+        return null;
+      }
+
+      // 선형 보간 (필요시 Hermite로 변경 가능)
+      positionProperty.setInterpolationOptions({
+        interpolationDegree:    1,
+        interpolationAlgorithm: Cesium.LinearApproximation
+      });
+
+      const cesiumColor = Cesium.Color.fromCssColorString(cfg.color);
+
+      const entity = viewer.entities.add({
+        name: `${data.r || data.icao} (${data.t || ''})`,
+        availability: new Cesium.TimeIntervalCollection([
+          new Cesium.TimeInterval({ start: firstTime, stop: lastTime })
+        ]),
+        position: positionProperty,
+        // 속도벡터 방향으로 자동 yaw (모델의 +X축이 진행방향이 되도록)
+        orientation: new Cesium.VelocityOrientationProperty(positionProperty),
+        model: {
+          uri:              cfg.glb,
+          scale:            cfg.scale,
+          minimumPixelSize: MODEL_MIN_PIXEL,
+          maximumScale:     MODEL_MAX_SCALE,
+          runAnimations:    false,
+        },
+        // 전체 궤적 polyline (검증용)
+        path: {
+          material:  cesiumColor.withAlpha(0.7),
+          width:     PATH_WIDTH,
+          leadTime:  0,
+          trailTime: 1e9,        // availability 안에서 전체 trail 항상 표시
+          resolution: 5
+        },
+        label: {
+          text:        data.r || data.icao,
+          font:        '11px sans-serif',
+          fillColor:   Cesium.Color.WHITE,
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 2,
+          style:        Cesium.LabelStyle.FILL_AND_OUTLINE,
+          pixelOffset:  new Cesium.Cartesian2(0, -28),
+          showBackground:  true,
+          backgroundColor: cesiumColor.withAlpha(0.6),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY
+        },
+        properties: {
+          icao: data.icao,
+          reg:  data.r,
+          type: data.t,
+          desc: data.desc,
+        }
+      });
+
+      console.log(`[ok] ${data.r || data.icao} (${data.t}) — ${added} samples, ` +
+                  `${Cesium.JulianDate.secondsDifference(lastTime, firstTime).toFixed(0)} sec span`);
+
+      return { entity, firstTime, lastTime, info: data, samples: added };
+    }
+
+    // ============================================================
+    // 메인: 전부 로드 → 클럭 세팅 → 재생
+    // ============================================================
+    (async () => {
+      const statusEl = document.getElementById('status');
+      const legendEl = document.getElementById('legendRows');
+
+      const results = [];
+      for (const cfg of AIRCRAFTS) {
+        statusEl.textContent = `Loading ${cfg.json}…`;
+        try {
+          const r = await loadAircraft(cfg);
+          if (!r) continue;
+          results.push({ ...r, cfg });
+
+          // 범례에 한 줄 추가
+          const row = document.createElement('div');
+          row.className = 'legend-row';
+          row.innerHTML =
+            `<span class="legend-dot" style="background:${cfg.color}"></span>` +
+            `<span class="legend-text">${r.info.r || r.info.icao} — ${r.info.t || ''} ` +
+            `(${r.samples} pts)</span>`;
+          legendEl.appendChild(row);
+        } catch (e) {
+          console.error(`[fail] ${cfg.json}`, e);
+        }
+      }
+
+      if (results.length === 0) {
+        statusEl.textContent = 'No trajectories loaded. Check console / file paths.';
+        return;
+      }
+
+      // 모든 항공기 시각의 합집합으로 글로벌 클럭 윈도우 결정
+      let globalStart = results[0].firstTime;
+      let globalStop  = results[0].lastTime;
+      for (const r of results) {
+        if (Cesium.JulianDate.lessThan(r.firstTime, globalStart))    globalStart = r.firstTime;
+        if (Cesium.JulianDate.greaterThan(r.lastTime,  globalStop))  globalStop  = r.lastTime;
+      }
+
+      viewer.clock.startTime    = globalStart.clone();
+      viewer.clock.stopTime     = globalStop.clone();
+      viewer.clock.currentTime  = globalStart.clone();
+      viewer.clock.clockRange   = Cesium.ClockRange.LOOP_STOP;
+      viewer.clock.multiplier   = CLOCK_MULTIPLIER;
+      viewer.clock.shouldAnimate = true;
+      viewer.timeline.zoomTo(globalStart, globalStop);
+
+      const totalSec = Cesium.JulianDate.secondsDifference(globalStop, globalStart);
+      statusEl.textContent =
+        `Loaded ${results.length} aircraft │ ` +
+        `Span: ${(totalSec / 3600).toFixed(2)} h │ ` +
+        `Speed: ${CLOCK_MULTIPLIER}x │ ` +
+        `${NORMALIZE_START_TIMES ? 'Sync start' : 'Real time'} │ ` +
+        `Click an aircraft to inspect`;
+    })();
+  </script>
+</body>
+</html>
